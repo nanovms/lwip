@@ -284,6 +284,89 @@ dhcp6_stateful_enabled(struct dhcp6 *dhcp6)
   return 1;
 }*/
 
+/**
+ * Create a DHCPv6 request, fill in common headers
+ *
+ * @param netif the netif under DHCPv6 control
+ * @param dhcp6 dhcp6 control struct
+ * @param message_type message type of the request
+ * @param opt_len_alloc option length to allocate
+ * @param options_out_len option length on exit
+ * @return a pbuf for the message
+ */
+static struct pbuf *
+dhcp6_create_msg(struct netif *netif, struct dhcp6 *dhcp6, u8_t message_type,
+                 u16_t opt_len_alloc, u16_t *options_out_len)
+{
+  struct pbuf *p_out;
+  struct dhcp6_msg *msg_out;
+
+  LWIP_ERROR("dhcp6_create_msg: netif != NULL", (netif != NULL), return NULL;);
+  LWIP_ERROR("dhcp6_create_msg: dhcp6 != NULL", (dhcp6 != NULL), return NULL;);
+  p_out = pbuf_alloc(PBUF_TRANSPORT, sizeof(struct dhcp6_msg) + opt_len_alloc, PBUF_RAM);
+  if (p_out == NULL) {
+    LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_LEVEL_SERIOUS,
+                ("dhcp6_create_msg(): could not allocate pbuf\n"));
+    return NULL;
+  }
+  LWIP_ASSERT("dhcp6_create_msg: check that first pbuf can hold struct dhcp6_msg",
+              (p_out->len >= sizeof(struct dhcp6_msg) + opt_len_alloc));
+
+  /* @todo: limit new xid for certain message types? */
+  /* reuse transaction identifier in retransmissions */
+  if (dhcp6->tries == 0) {
+    dhcp6->xid = LWIP_RAND() & 0xFFFFFF;
+  }
+
+  LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE,
+              ("transaction id xid(%"X32_F")\n", dhcp6->xid));
+
+  msg_out = (struct dhcp6_msg *)p_out->payload;
+  memset(msg_out, 0, sizeof(struct dhcp6_msg) + opt_len_alloc);
+
+  msg_out->msgtype = message_type;
+  msg_out->transaction_id[0] = (u8_t)(dhcp6->xid >> 16);
+  msg_out->transaction_id[1] = (u8_t)(dhcp6->xid >> 8);
+  msg_out->transaction_id[2] = (u8_t)dhcp6->xid;
+  *options_out_len = 0;
+  return p_out;
+}
+
+static u16_t
+dhcp6_option_short(u16_t options_out_len, u8_t *options, u16_t value)
+{
+  options[options_out_len++] = (u8_t)((value & 0xff00U) >> 8);
+  options[options_out_len++] = (u8_t) (value & 0x00ffU);
+  return options_out_len;
+}
+
+static u16_t
+dhcp6_option_optionrequest(u16_t options_out_len, u8_t *options, const u16_t *req_options,
+                           u16_t num_req_options, u16_t max_len)
+{
+  size_t i;
+  u16_t ret;
+
+  LWIP_ASSERT("dhcp6_option_optionrequest: options_out_len + sizeof(struct dhcp6_msg) + addlen <= max_len",
+    sizeof(struct dhcp6_msg) + options_out_len + 4U + (2U * num_req_options) <= max_len);
+  LWIP_UNUSED_ARG(max_len);
+
+  ret = dhcp6_option_short(options_out_len, options, DHCP6_OPTION_ORO);
+  ret = dhcp6_option_short(ret, options, 2 * num_req_options);
+  for (i = 0; i < num_req_options; i++) {
+    ret = dhcp6_option_short(ret, options, req_options[i]);
+  }
+  return ret;
+}
+
+/* All options are added, shrink the pbuf to the required size */
+static void
+dhcp6_msg_finalize(u16_t options_out_len, struct pbuf *p_out)
+{
+  /* shrink the pbuf to the actual content length */
+  pbuf_realloc(p_out, (u16_t)(sizeof(struct dhcp6_msg) + options_out_len));
+}
+
 static void
 dhcp6_set_req_timeout(struct dhcp6 *dhcp6, u16_t initial_rt, u16_t max_rt)
 {
@@ -380,90 +463,6 @@ dhcp6_disable(struct netif *netif)
     }
   }
 }
-
-/**
- * Create a DHCPv6 request, fill in common headers
- *
- * @param netif the netif under DHCPv6 control
- * @param dhcp6 dhcp6 control struct
- * @param message_type message type of the request
- * @param opt_len_alloc option length to allocate
- * @param options_out_len option length on exit
- * @return a pbuf for the message
- */
-static struct pbuf *
-dhcp6_create_msg(struct netif *netif, struct dhcp6 *dhcp6, u8_t message_type,
-                 u16_t opt_len_alloc, u16_t *options_out_len)
-{
-  struct pbuf *p_out;
-  struct dhcp6_msg *msg_out;
-
-  LWIP_ERROR("dhcp6_create_msg: netif != NULL", (netif != NULL), return NULL;);
-  LWIP_ERROR("dhcp6_create_msg: dhcp6 != NULL", (dhcp6 != NULL), return NULL;);
-  p_out = pbuf_alloc(PBUF_TRANSPORT, sizeof(struct dhcp6_msg) + opt_len_alloc, PBUF_RAM);
-  if (p_out == NULL) {
-    LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_LEVEL_SERIOUS,
-                ("dhcp6_create_msg(): could not allocate pbuf\n"));
-    return NULL;
-  }
-  LWIP_ASSERT("dhcp6_create_msg: check that first pbuf can hold struct dhcp6_msg",
-              (p_out->len >= sizeof(struct dhcp6_msg) + opt_len_alloc));
-
-  /* @todo: limit new xid for certain message types? */
-  /* reuse transaction identifier in retransmissions */
-  if (dhcp6->tries == 0) {
-    dhcp6->xid = LWIP_RAND() & 0xFFFFFF;
-  }
-
-  LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE,
-              ("transaction id xid(%"X32_F")\n", dhcp6->xid));
-
-  msg_out = (struct dhcp6_msg *)p_out->payload;
-  memset(msg_out, 0, sizeof(struct dhcp6_msg) + opt_len_alloc);
-
-  msg_out->msgtype = message_type;
-  msg_out->transaction_id[0] = (u8_t)(dhcp6->xid >> 16);
-  msg_out->transaction_id[1] = (u8_t)(dhcp6->xid >> 8);
-  msg_out->transaction_id[2] = (u8_t)dhcp6->xid;
-  *options_out_len = 0;
-  return p_out;
-}
-
-static u16_t
-dhcp6_option_short(u16_t options_out_len, u8_t *options, u16_t value)
-{
-  options[options_out_len++] = (u8_t)((value & 0xff00U) >> 8);
-  options[options_out_len++] = (u8_t) (value & 0x00ffU);
-  return options_out_len;
-}
-
-static u16_t
-dhcp6_option_optionrequest(u16_t options_out_len, u8_t *options, const u16_t *req_options,
-                           u16_t num_req_options, u16_t max_len)
-{
-  size_t i;
-  u16_t ret;
-
-  LWIP_ASSERT("dhcp6_option_optionrequest: options_out_len + sizeof(struct dhcp6_msg) + addlen <= max_len",
-    sizeof(struct dhcp6_msg) + options_out_len + 4U + (2U * num_req_options) <= max_len);
-  LWIP_UNUSED_ARG(max_len);
-
-  ret = dhcp6_option_short(options_out_len, options, DHCP6_OPTION_ORO);
-  ret = dhcp6_option_short(ret, options, 2 * num_req_options);
-  for (i = 0; i < num_req_options; i++) {
-    ret = dhcp6_option_short(ret, options, req_options[i]);
-  }
-  return ret;
-}
-
-/* All options are added, shrink the pbuf to the required size */
-static void
-dhcp6_msg_finalize(u16_t options_out_len, struct pbuf *p_out)
-{
-  /* shrink the pbuf to the actual content length */
-  pbuf_realloc(p_out, (u16_t)(sizeof(struct dhcp6_msg) + options_out_len));
-}
-
 
 #if LWIP_IPV6_DHCP6_STATELESS
 static void
