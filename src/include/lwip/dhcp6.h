@@ -69,7 +69,22 @@ struct dhcp6
   /** #ticks with period DHCP6_TIMER_MSECS for request timeout */
   u16_t request_timeout;
 #if LWIP_IPV6_DHCP6_STATEFUL
-  /* @todo: add more members here to keep track of stateful DHCPv6 data, like lease times */
+  /** #ticks with period DHCP6_TIMER_MSECS since sending the first request packet */
+  u16_t elapsed_time;
+  /** server preference option value */
+  u8_t preference;
+  /** server DUID */
+  u8_t server_id[18];   /* identifiers longer than DUID-UUID are not supported */
+  /** server DUID length in bytes */
+  u8_t server_id_len;
+  /** Identity Association Identifier */
+  u32_t iaid;
+  /** IP address offered by server */
+  ip6_addr_t addr;
+  /** index of assigned IP address */
+  s8_t addr_idx;
+  /** timers for address lease */
+  u32_t t1, t2;
 #endif /* LWIP_IPV6_DHCP6_STATEFUL */
 };
 

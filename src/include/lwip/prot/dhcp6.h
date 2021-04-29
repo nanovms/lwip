@@ -71,7 +71,12 @@ PACK_STRUCT_END
 typedef enum {
   DHCP6_STATE_OFF               = 0,
   DHCP6_STATE_STATELESS_IDLE    = 1,
-  DHCP6_STATE_REQUESTING_CONFIG = 2
+  DHCP6_STATE_REQUESTING_CONFIG = 2,
+  DHCP6_STATE_SOLICIT           = 3,
+  DHCP6_STATE_REQUESTING_ADDR   = 4,
+  DHCP6_STATE_STATEFUL_IDLE     = 5,
+  DHCP6_STATE_RENEW             = 6,
+  DHCP6_STATE_REBIND            = 7,
 } dhcp6_state_enum_t;
 
 /* DHCPv6 message types */
