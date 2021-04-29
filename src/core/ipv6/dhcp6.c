@@ -284,6 +284,24 @@ dhcp6_stateful_enabled(struct dhcp6 *dhcp6)
   return 1;
 }*/
 
+static void
+dhcp6_set_req_timeout(struct dhcp6 *dhcp6, u16_t initial_rt, u16_t max_rt)
+{
+  u32_t secs;
+  u32_t msecs;
+
+  LWIP_ASSERT("dhcp6->tries > 0", dhcp6->tries > 0);
+  secs = (dhcp6->tries < 16) ? (initial_rt << (dhcp6->tries - 1)) : max_rt;
+  if (secs > max_rt) {
+      secs = max_rt;
+  }
+  msecs = secs * 1000;
+  msecs += (((u64_t)LWIP_RAND() * msecs / 5) >> 32) - msecs / 10; /* Apply +-0.1 random factor */
+  dhcp6->request_timeout = (u16_t)((msecs + DHCP6_TIMER_MSECS - 1) / DHCP6_TIMER_MSECS);
+  LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE,
+              ("set request timeout to %"U32_F" msecs\n", msecs));
+}
+
 /**
  * @ingroup dhcp6
  * Enable stateful DHCPv6 on this netif
@@ -461,7 +479,6 @@ dhcp6_information_request(struct netif *netif, struct dhcp6 *dhcp6)
 #endif
   };
   
-  u16_t msecs;
   struct pbuf *p_out;
   u16_t options_out_len;
   LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE, ("dhcp6_information_request()\n"));
@@ -490,9 +507,7 @@ dhcp6_information_request(struct netif *netif, struct dhcp6 *dhcp6)
   if (dhcp6->tries < 255) {
     dhcp6->tries++;
   }
-  msecs = (u16_t)((dhcp6->tries < 6 ? 1 << dhcp6->tries : 60) * 1000);
-  dhcp6->request_timeout = (u16_t)((msecs + DHCP6_TIMER_MSECS - 1) / DHCP6_TIMER_MSECS);
-  LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp6_information_request(): set request timeout %"U16_F" msecs\n", msecs));
+  dhcp6_set_req_timeout(dhcp6, 1, 3600);
 }
 
 static err_t
