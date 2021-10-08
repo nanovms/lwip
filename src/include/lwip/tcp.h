@@ -234,6 +234,7 @@ struct tcp_pcb_listen {
 #if TCP_LISTEN_BACKLOG
   u8_t backlog;
   u8_t accepts_pending;
+  u8_t syn_pending;
 #endif /* TCP_LISTEN_BACKLOG */
 };
 

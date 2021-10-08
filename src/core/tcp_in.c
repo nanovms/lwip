@@ -655,6 +655,10 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: listen backlog exceeded for port %"U16_F"\n", tcphdr->dest));
       return;
     }
+    if (pcb->syn_pending >= pcb->backlog) {
+      LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: syn queue length exceeded for port %"U16_F"\n", tcphdr->dest));
+      return;
+    }
 #endif /* TCP_LISTEN_BACKLOG */
     npcb = tcp_alloc(pcb->prio);
     /* If a new PCB could not be created (probably due to lack of memory),
@@ -669,8 +673,7 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
       return;
     }
 #if TCP_LISTEN_BACKLOG
-    pcb->accepts_pending++;
-    tcp_set_flags(npcb, TF_BACKLOGPEND);
+    pcb->syn_pending++;
 #endif /* TCP_LISTEN_BACKLOG */
     /* Set up the new PCB. */
     ip_addr_copy(npcb->local_ip, *ip_current_dest_addr());
@@ -936,7 +939,15 @@ tcp_process(struct tcp_pcb *pcb)
 #if LWIP_CALLBACK_API
             LWIP_ASSERT("pcb->listener->accept != NULL", pcb->listener->accept != NULL);
 #endif
-            tcp_backlog_accepted(pcb);
+#if TCP_LISTEN_BACKLOG
+            LWIP_ASSERT("syn_pending != 0", pcb->listener->syn_pending != 0);
+            pcb->listener->syn_pending--;
+            if (pcb->listener->accepts_pending >= pcb->listener->backlog) {
+              LWIP_DEBUGF(TCP_DEBUG, ("tcp_process: listen backlog exceeded for port %"U16_F"\n", pcb->listener->local_port));
+              tcp_abort(pcb);
+              return ERR_ABRT;
+            }
+#endif /* TCP_LISTEN_BACKLOG */
             /* Call the accept function. */
             TCP_EVENT_ACCEPT(pcb->listener, pcb, pcb->callback_arg, ERR_OK, err);
           }

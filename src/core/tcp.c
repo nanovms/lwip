@@ -324,6 +324,9 @@ tcp_backlog_accepted(struct tcp_pcb *pcb)
       pcb->listener->accepts_pending--;
       tcp_clear_flags(pcb, TF_BACKLOGPEND);
     }
+  } else if ((pcb->state == SYN_RCVD) && (pcb->listener != NULL)) {
+    LWIP_ASSERT("syn_pending != 0", pcb->listener->syn_pending != 0);
+    pcb->listener->syn_pending--;
   }
 }
 #endif /* TCP_LISTEN_BACKLOG */
@@ -910,6 +913,7 @@ tcp_listen_with_backlog_and_err(struct tcp_pcb *pcb, u8_t backlog, err_t *err)
 #endif /* LWIP_CALLBACK_API */
 #if TCP_LISTEN_BACKLOG
   lpcb->accepts_pending = 0;
+  lpcb->syn_pending = 0;
   tcp_backlog_set(lpcb, backlog);
 #endif /* TCP_LISTEN_BACKLOG */
   TCP_REG(&tcp_listen_pcbs.pcbs, (struct tcp_pcb *)lpcb);
