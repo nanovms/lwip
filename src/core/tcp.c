@@ -203,6 +203,10 @@ tcp_init(void)
 #ifdef LWIP_RAND
   tcp_port = TCP_ENSURE_LOCAL_PORT_RANGE(LWIP_RAND());
 #endif /* LWIP_RAND */
+#if TCP_LISTEN_BACKLOG
+  for (int i = 0; i < TCP_SYNCOOKIE_SECRET_SIZE / sizeof(u32_t); i++)
+    *(((u32_t *)tcp_syncookie_secret) + i) = LWIP_RAND();
+#endif
 }
 
 /** Free a tcp pcb */

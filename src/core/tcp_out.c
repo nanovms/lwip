@@ -2011,6 +2011,54 @@ tcp_rst(const struct tcp_pcb *pcb, u32_t seqno, u32_t ackno,
 }
 
 /**
+ * Send a TCP SYN-ACK packet.
+ *
+ * Called by tcp_syncookie_send()
+ *
+ * @param pcb TCP listen pcb
+ * @param seqno the sequence number to use for the outgoing segment
+ * @param ackno the acknowledge number to use for the outgoing segment
+ * @param local_ip the local IP address to send the segment from
+ * @param remote_ip the remote IP address to send the segment to
+ * @param local_port the local TCP port to send the segment from
+ * @param remote_port the remote TCP port to send the segment to
+ */
+void
+tcp_synack(const struct tcp_pcb_listen *pcb, u32_t seqno, u32_t ackno,
+           const ip_addr_t *local_ip, const ip_addr_t *remote_ip,
+           u16_t local_port, u16_t remote_port)
+{
+  u8_t optlen;
+  struct pbuf *p;
+  struct netif *netif;
+  u16_t mss;
+  struct tcp_hdr *tcphdr;
+  u32_t *opts;
+
+  optlen = LWIP_TCP_OPT_LENGTH(TF_SEG_OPTS_MSS);
+  p = tcp_output_alloc_header_common(ackno, optlen, 0, lwip_htonl(seqno), local_port,
+    remote_port, TCP_SYN | TCP_ACK, PP_HTONS(TCP_WND));
+  if (p == NULL) {
+    LWIP_DEBUGF(TCP_DEBUG, ("tcp_synack: could not allocate memory for pbuf\n"));
+    return;
+  }
+#if TCP_CALCULATE_EFF_SEND_MSS
+  netif = tcp_route((const struct tcp_pcb *)pcb, local_ip, remote_ip);
+  if (netif == NULL)
+    return;
+  mss = tcp_eff_send_mss_netif(TCP_MSS, netif, remote_ip);
+#else /* TCP_CALCULATE_EFF_SEND_MSS */
+  LWIP_UNUSED_ARG(netif);
+  mss = TCP_MSS;
+#endif /* TCP_CALCULATE_EFF_SEND_MSS */
+  tcphdr = (struct tcp_hdr *)p->payload;
+  opts = (u32_t *)(void *)(tcphdr + 1);
+  *opts = TCP_BUILD_MSS_OPTION(mss);
+  tcp_output_control_segment((const struct tcp_pcb *)pcb, p, local_ip, remote_ip);
+  LWIP_DEBUGF(TCP_RST_DEBUG, ("tcp_synack: seqno %"U32_F" ackno %"U32_F".\n", seqno, ackno));
+}
+
+/**
  * Send an ACK without data.
  *
  * @param pcb Protocol control block for the TCP connection to send the ACK

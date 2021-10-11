@@ -154,6 +154,10 @@ err_t            tcp_process_refused_data(struct tcp_pcb *pcb);
 
 #define TCP_TCPLEN(seg) ((seg)->len + (((TCPH_FLAGS((seg)->tcphdr) & (TCP_FIN | TCP_SYN)) != 0) ? 1U : 0U))
 
+/* Syncookie secret size is chosen so that the size of the data on which the hash is calculated is a
+ * multiple of the block size of the hash function. */
+#define TCP_SYNCOOKIE_SECRET_SIZE   36
+
 /** Flags used on input processing, not on pcb->flags
 */
 #define TF_RESET     (u8_t)0x08U   /* Connection was reset. */
@@ -326,6 +330,7 @@ struct tcp_seg {
 extern struct tcp_pcb *tcp_input_pcb;
 extern u32_t tcp_ticks;
 extern u8_t tcp_active_pcbs_changed;
+extern u8_t tcp_syncookie_secret[TCP_SYNCOOKIE_SECRET_SIZE];
 
 /* The TCP PCB lists. */
 union tcp_listen_pcbs_t { /* List of all TCP PCBs in LISTEN state. */
@@ -465,6 +470,9 @@ err_t tcp_enqueue_flags(struct tcp_pcb *pcb, u8_t flags);
 void tcp_rexmit_seg(struct tcp_pcb *pcb, struct tcp_seg *seg);
 
 void tcp_rst(const struct tcp_pcb* pcb, u32_t seqno, u32_t ackno,
+       const ip_addr_t *local_ip, const ip_addr_t *remote_ip,
+       u16_t local_port, u16_t remote_port);
+void tcp_synack(const struct tcp_pcb_listen *pcb, u32_t seqno, u32_t ackno,
        const ip_addr_t *local_ip, const ip_addr_t *remote_ip,
        u16_t local_port, u16_t remote_port);
 

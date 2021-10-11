@@ -90,9 +90,10 @@ struct tcp_pcb *tcp_input_pcb;
 /* Forward declarations. */
 static err_t tcp_process(struct tcp_pcb *pcb);
 static void tcp_receive(struct tcp_pcb *pcb);
+static u8_t tcp_get_next_optbyte(void);
 static void tcp_parseopt(struct tcp_pcb *pcb);
 
-static void tcp_listen_input(struct tcp_pcb_listen *pcb);
+static struct tcp_pcb *tcp_listen_input(struct tcp_pcb_listen *pcb);
 static void tcp_timewait_input(struct tcp_pcb *pcb);
 
 static int tcp_input_delayed_close(struct tcp_pcb *pcb);
@@ -377,10 +378,12 @@ tcp_input(struct pbuf *p, struct netif *inp)
                                      tcphdr_opt1len, tcphdr_opt2, p) == ERR_OK)
 #endif
       {
-        tcp_listen_input(lpcb);
+        pcb = tcp_listen_input(lpcb);
       }
-      pbuf_free(p);
-      return;
+      if (pcb == NULL) {
+        pbuf_free(p);
+        return;
+      }
     }
   }
 
@@ -617,16 +620,188 @@ tcp_input_delayed_close(struct tcp_pcb *pcb)
   return 0;
 }
 
+#if TCP_LISTEN_BACKLOG
+
+#include "netif/ppp/polarssl/md5.h" /* for hash function definitions */
+
+static const u16_t msstab[] = { /* should contain the most commonly used MSS values */
+  536,
+  1300,
+  1440,
+  1452,
+  1460,
+};
+
+u8_t tcp_syncookie_secret[TCP_SYNCOOKIE_SECRET_SIZE];
+
+/**
+ * Calculates the cookie value to be sent as sequence number in a SYN-ACK packet and to be checked
+ * in a received ACK packet.
+ *
+ * @return cookie value
+ */
+static u32_t
+tcp_syncookie_calc(void)
+{
+  u32_t t = (tcp_ticks >> 7);   /* increments every 64 seconds */
+  md5_context md_ctx;
+  u8_t hash[16];
+
+  md5_starts(&md_ctx);
+  md5_update(&md_ctx, (u8_t *)ip_current_dest_addr(), sizeof(ip4_addr_t));
+  md5_update(&md_ctx, (u8_t *)&tcphdr->dest, sizeof(u16_t));
+  md5_update(&md_ctx, (u8_t *)ip_current_src_addr(), sizeof(ip4_addr_t));
+  md5_update(&md_ctx, (u8_t *)&tcphdr->src, sizeof(u16_t));
+  md5_update(&md_ctx, (u8_t *)&t, sizeof(t));
+  md5_update(&md_ctx, tcp_syncookie_secret, TCP_SYNCOOKIE_SECRET_SIZE);
+  md5_finish(&md_ctx, hash);
+  return (t << 27) | ((*(u32_t *)hash) & 0xffffff);
+}
+
+/**
+ * Called by tcp_listen_input() when a SYN packet arrives and the listening
+ * connection has its SYN queue full.
+ *
+ * @param pcb the tcp_pcb_listen for which the packet arrived
+ */
+static void
+tcp_syncookie_send(struct tcp_pcb_listen *pcb)
+{
+  u32_t mss_idx = 0;
+  u32_t cookie;
+
+  /* Parse the TCP MSS option, if present. */
+  for (tcp_optidx = 0; tcp_optidx < tcphdr_optlen - 1; ) {
+    u8_t opt = tcp_get_next_optbyte();
+    u8_t optlen;
+
+    switch (opt) {
+      case LWIP_TCP_OPT_MSS:
+        LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_syncookie_send: MSS\n"));
+        if ((tcp_get_next_optbyte() == LWIP_TCP_OPT_LEN_MSS) &&
+            ((tcp_optidx - 2 + LWIP_TCP_OPT_LEN_MSS) <= tcphdr_optlen)) {
+          u16_t mss;
+          u8_t i;
+
+          mss = (u16_t)tcp_get_next_optbyte() << 8;
+          mss |= tcp_get_next_optbyte();
+          if ((mss > TCP_MSS) || (mss == 0))
+            mss = TCP_MSS;
+          for (i = sizeof(msstab) / sizeof(msstab[0]) - 1; i; i--)
+            if (mss >= msstab[i]) {
+              mss_idx = i;
+              break;
+            }
+        }
+        break;
+      case LWIP_TCP_OPT_NOP:
+      case LWIP_TCP_OPT_EOL:
+        break;
+      default:
+        optlen = tcp_get_next_optbyte();
+        if (optlen < 2)
+          break;
+        tcp_optidx += optlen - 2;
+        break;
+    }
+  }
+
+  cookie = ((mss_idx << 24) | tcp_syncookie_calc()) + seqno;
+  tcp_synack(pcb, cookie, seqno + tcplen, ip_current_dest_addr(), ip_current_src_addr(),
+             tcphdr->dest, tcphdr->src);
+}
+
+/**
+ * Called by tcp_listen_input() when an ACK packet arrives, to check whether the acknowledge number
+ * in the packet can be validated against a SYN cookie.
+ *
+ * @return MSS table index if SYN cookie validation is successful, negative number otherwise
+ */
+static int
+tcp_syncookie_recv(void)
+{
+  u32_t cookie = ackno - seqno; /* Reverse the sum with seqno done when sending the cookie. */
+
+  if ((cookie & 0xf8ffffff) == tcp_syncookie_calc())
+    return (cookie >> 24) & 0x07;
+  else
+    return -1;
+}
+
+#endif
+
+/**
+ * Called by tcp_listen_input() to create a new connection pcb from a listener pcb.
+ *
+ * @param pcb the listener pcb for the connection
+ * @param client_seqno initial sequence number sent by the client in its SYN packet
+ * @return the newly created pcb, or NULL if error
+ */
+static struct tcp_pcb *
+tcp_listen_new_conn(struct tcp_pcb_listen *pcb, u32_t client_seqno)
+{
+  struct tcp_pcb *npcb = tcp_alloc(pcb->prio);
+
+  /* If a new PCB could not be created (probably due to lack of memory),
+     we don't do anything, but rely on the sender will retransmit the
+     SYN at a time when we have more memory available. */
+  if (npcb == NULL) {
+    err_t err;
+    LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_new_conn: could not allocate PCB\n"));
+    TCP_STATS_INC(tcp.memerr);
+    TCP_EVENT_ACCEPT(pcb, NULL, pcb->callback_arg, ERR_MEM, err);
+    LWIP_UNUSED_ARG(err); /* err not useful here */
+    return NULL;
+  }
+
+  /* Set up the new PCB. */
+  ip_addr_copy(npcb->local_ip, *ip_current_dest_addr());
+  ip_addr_copy(npcb->remote_ip, *ip_current_src_addr());
+  npcb->local_port = pcb->local_port;
+  npcb->remote_port = tcphdr->src;
+  npcb->state = SYN_RCVD;
+  npcb->rcv_nxt = client_seqno + 1;
+  npcb->rcv_ann_right_edge = npcb->rcv_nxt;
+  npcb->snd_wl1 = client_seqno - 1; /* initialise to seqno-1 to force window update */
+  npcb->callback_arg = pcb->callback_arg;
+#if LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG
+  npcb->listener = pcb;
+#endif /* LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG */
+  /* inherit socket options */
+  npcb->so_options = pcb->so_options & SOF_INHERITED;
+  npcb->netif_idx = pcb->netif_idx;
+  /* Register the new PCB so that we can begin receiving segments
+     for it. */
+  TCP_REG_ACTIVE(npcb);
+
+  /* Parse any options in the incoming packet. */
+  tcp_parseopt(npcb);
+  npcb->snd_wnd = tcphdr->wnd;
+  npcb->snd_wnd_max = npcb->snd_wnd;
+
+  MIB2_STATS_INC(mib2.tcppassiveopens);
+
+#if LWIP_TCP_PCB_NUM_EXT_ARGS
+  if (tcp_ext_arg_invoke_callbacks_passive_open(pcb, npcb) != ERR_OK) {
+    tcp_abandon(npcb, 0);
+    return NULL;
+  }
+#endif
+
+  return npcb;
+}
+
 /**
  * Called by tcp_input() when a segment arrives for a listening
  * connection (from tcp_input()).
  *
  * @param pcb the tcp_pcb_listen for which a segment arrived
+ * @return the newly created pcb if it should be further processed by tcp_input(), NULL otherwise
  *
  * @note the segment which arrived is saved in global variables, therefore only the pcb
  *       involved is passed as a parameter to this function
  */
-static void
+static struct tcp_pcb *
 tcp_listen_input(struct tcp_pcb_listen *pcb)
 {
   struct tcp_pcb *npcb;
@@ -635,7 +810,7 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
 
   if (flags & TCP_RST) {
     /* An incoming RST should be ignored. Return. */
-    return;
+    return NULL;
   }
 
   LWIP_ASSERT("tcp_listen_input: invalid pcb", pcb != NULL);
@@ -644,7 +819,22 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
      creates a new PCB, and responds with a SYN|ACK. */
   if (flags & TCP_ACK) {
     /* For incoming segments with the ACK flag set, respond with a
-       RST. */
+       RST, unless the segment can be validated against a syncookie. */
+#if TCP_LISTEN_BACKLOG
+    int mss_idx = tcp_syncookie_recv();
+
+    if ((mss_idx >= 0) && (mss_idx < sizeof(msstab) / sizeof(msstab[0]))) {
+      LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", tcphdr->src, tcphdr->dest));
+      npcb = tcp_listen_new_conn(pcb, seqno - 1);
+      if (npcb) {
+        /* Set lastack to (ackno - 1) so that tcp_process() will recognize the ackno as valid. */
+        npcb->lastack = npcb->snd_wl2 = ackno - 1;
+        npcb->snd_nxt = npcb->snd_lbb = ackno;
+        npcb->mss = msstab[mss_idx];
+      }
+      return npcb;
+    }
+#endif
     LWIP_DEBUGF(TCP_RST_DEBUG, ("tcp_listen_input: ACK in LISTEN, sending reset\n"));
     tcp_rst((const struct tcp_pcb *)pcb, ackno, seqno + tcplen, ip_current_dest_addr(),
             ip_current_src_addr(), tcphdr->dest, tcphdr->src);
@@ -653,80 +843,40 @@ tcp_listen_input(struct tcp_pcb_listen *pcb)
 #if TCP_LISTEN_BACKLOG
     if (pcb->accepts_pending >= pcb->backlog) {
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: listen backlog exceeded for port %"U16_F"\n", tcphdr->dest));
-      return;
+      return NULL;
     }
     if (pcb->syn_pending >= pcb->backlog) {
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: syn queue length exceeded for port %"U16_F"\n", tcphdr->dest));
-      return;
+      tcp_syncookie_send(pcb);
+      return NULL;
     }
 #endif /* TCP_LISTEN_BACKLOG */
-    npcb = tcp_alloc(pcb->prio);
-    /* If a new PCB could not be created (probably due to lack of memory),
-       we don't do anything, but rely on the sender will retransmit the
-       SYN at a time when we have more memory available. */
+    npcb = tcp_listen_new_conn(pcb, seqno);
     if (npcb == NULL) {
-      err_t err;
-      LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: could not allocate PCB\n"));
-      TCP_STATS_INC(tcp.memerr);
-      TCP_EVENT_ACCEPT(pcb, NULL, pcb->callback_arg, ERR_MEM, err);
-      LWIP_UNUSED_ARG(err); /* err not useful here */
-      return;
+      return NULL;
     }
 #if TCP_LISTEN_BACKLOG
     pcb->syn_pending++;
 #endif /* TCP_LISTEN_BACKLOG */
-    /* Set up the new PCB. */
-    ip_addr_copy(npcb->local_ip, *ip_current_dest_addr());
-    ip_addr_copy(npcb->remote_ip, *ip_current_src_addr());
-    npcb->local_port = pcb->local_port;
-    npcb->remote_port = tcphdr->src;
-    npcb->state = SYN_RCVD;
-    npcb->rcv_nxt = seqno + 1;
-    npcb->rcv_ann_right_edge = npcb->rcv_nxt;
     iss = tcp_next_iss(npcb);
     npcb->snd_wl2 = iss;
     npcb->snd_nxt = iss;
     npcb->lastack = iss;
     npcb->snd_lbb = iss;
-    npcb->snd_wl1 = seqno - 1;/* initialise to seqno-1 to force window update */
-    npcb->callback_arg = pcb->callback_arg;
-#if LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG
-    npcb->listener = pcb;
-#endif /* LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG */
-    /* inherit socket options */
-    npcb->so_options = pcb->so_options & SOF_INHERITED;
-    npcb->netif_idx = pcb->netif_idx;
-    /* Register the new PCB so that we can begin receiving segments
-       for it. */
-    TCP_REG_ACTIVE(npcb);
-
-    /* Parse any options in the SYN. */
-    tcp_parseopt(npcb);
-    npcb->snd_wnd = tcphdr->wnd;
-    npcb->snd_wnd_max = npcb->snd_wnd;
 
 #if TCP_CALCULATE_EFF_SEND_MSS
     npcb->mss = tcp_eff_send_mss(npcb->mss, &npcb->local_ip, &npcb->remote_ip);
 #endif /* TCP_CALCULATE_EFF_SEND_MSS */
 
-    MIB2_STATS_INC(mib2.tcppassiveopens);
-
-#if LWIP_TCP_PCB_NUM_EXT_ARGS
-    if (tcp_ext_arg_invoke_callbacks_passive_open(pcb, npcb) != ERR_OK) {
-      tcp_abandon(npcb, 0);
-      return;
-    }
-#endif
-
     /* Send a SYN|ACK together with the MSS option. */
     rc = tcp_enqueue_flags(npcb, TCP_SYN | TCP_ACK);
     if (rc != ERR_OK) {
       tcp_abandon(npcb, 0);
-      return;
+      return NULL;
     }
     tcp_output(npcb);
   }
-  return;
+  return NULL;
 }
 
 /**
