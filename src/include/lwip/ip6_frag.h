@@ -43,6 +43,7 @@
 
 #include "lwip/opt.h"
 #include "lwip/pbuf.h"
+#include "lwip/ip.h"
 #include "lwip/ip6_addr.h"
 #include "lwip/ip6.h"
 #include "lwip/netif.h"
@@ -113,7 +114,7 @@ struct ip6_reassdata {
 
 #define ip6_reass_init() /* Compatibility define */
 void ip6_reass_tmr(void);
-struct pbuf *ip6_reass(struct pbuf *p);
+struct pbuf *ip6_reass(struct pbuf *p, struct ip_globals *ip_data);
 
 #endif /* LWIP_IPV6 && LWIP_IPV6_REASS */
 

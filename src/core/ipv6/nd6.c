@@ -122,7 +122,7 @@ static err_t nd6_queue_packet(s8_t neighbor_index, struct pbuf *q);
 #define ND6_SEND_FLAG_ALLNODES_DEST 0x02
 #define ND6_SEND_FLAG_ANY_SRC 0x04
 static void nd6_send_ns(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags);
-static void nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags);
+static void nd6_send_na(struct ip_globals *ip_data, const ip6_addr_t *target_addr, u8_t flags);
 static void nd6_send_neighbor_cache_probe(struct nd6_neighbor_cache_entry *entry, u8_t flags);
 #if LWIP_IPV6_SEND_ROUTER_SOLICIT
 static err_t nd6_send_rs(struct netif *netif);
@@ -281,18 +281,20 @@ nd6_process_autoconfig_prefix(struct netif *netif,
  * Process an incoming neighbor discovery message
  *
  * @param p the nd packet, p->payload pointing to the icmpv6 header
- * @param inp the netif on which this packet was received
+ * @param ip_data data for this packet computed by the IP input parser
  */
 void
-nd6_input(struct pbuf *p, struct netif *inp)
+nd6_input(struct pbuf *p, struct ip_globals *ip_data)
 {
   u8_t msg_type;
   s8_t i;
   s16_t dest_idx;
+  struct netif *inp;
 
   ND6_STATS_INC(nd6.recv);
 
   msg_type = *((u8_t *)p->payload);
+  inp = ip_data->current_input_netif;
   switch (msg_type) {
   case ICMP6_TYPE_NA: /* Neighbor Advertisement. */
   {
@@ -316,7 +318,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
     ip6_addr_assign_zone(&target_address, IP6_UNICAST, inp);
 
     /* Check a subset of the other RFC 4861 Sec. 7.1.2 requirements. */
-    if (IP6H_HOPLIM(ip6_current_header()) != ND6_HOPLIM || na_hdr->code != 0 ||
+    if (IP6H_HOPLIM(ip6_current_header(ip_data)) != ND6_HOPLIM || na_hdr->code != 0 ||
         ip6_addr_ismulticast(&target_address)) {
       pbuf_free(p);
       ND6_STATS_INC(nd6.proterr);
@@ -328,7 +330,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
     /* @todo RFC MUST: all included options have a length greater than zero */
 
     /* Unsolicited NA?*/
-    if (ip6_addr_ismulticast(ip6_current_dest_addr())) {
+    if (ip6_addr_ismulticast(ip6_current_dest_addr(ip_data))) {
       /* This is an unsolicited NA.
        * link-layer changed?
        * part of DAD mechanism? */
@@ -447,7 +449,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
     ip6_addr_assign_zone(&target_address, IP6_UNICAST, inp);
 
     /* Check a subset of the other RFC 4861 Sec. 7.1.1 requirements. */
-    if (IP6H_HOPLIM(ip6_current_header()) != ND6_HOPLIM || ns_hdr->code != 0 ||
+    if (IP6H_HOPLIM(ip6_current_header(ip_data)) != ND6_HOPLIM || ns_hdr->code != 0 ||
        ip6_addr_ismulticast(&target_address)) {
       pbuf_free(p);
       ND6_STATS_INC(nd6.proterr);
@@ -474,7 +476,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
     for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; ++i) {
       if ((ip6_addr_isvalid(netif_ip6_addr_state(inp, i)) ||
            (ip6_addr_istentative(netif_ip6_addr_state(inp, i)) &&
-            ip6_addr_isany(ip6_current_src_addr()))) &&
+            ip6_addr_isany(ip6_current_src_addr(ip_data)))) &&
           ip6_addr_cmp(&target_address, netif_ip6_addr(inp, i))) {
         accepted = 1;
         break;
@@ -488,13 +490,13 @@ nd6_input(struct pbuf *p, struct netif *inp)
     }
 
     /* Check for ANY address in src (DAD algorithm). */
-    if (ip6_addr_isany(ip6_current_src_addr())) {
+    if (ip6_addr_isany(ip6_current_src_addr(ip_data))) {
       /* Sender is validating this address. */
       for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; ++i) {
         if (!ip6_addr_isinvalid(netif_ip6_addr_state(inp, i)) &&
             ip6_addr_cmp(&target_address, netif_ip6_addr(inp, i))) {
           /* Send a NA back so that the sender does not use this address. */
-          nd6_send_na(inp, netif_ip6_addr(inp, i), ND6_FLAG_OVERRIDE | ND6_SEND_FLAG_ALLNODES_DEST);
+          nd6_send_na(ip_data, netif_ip6_addr(inp, i), ND6_FLAG_OVERRIDE | ND6_SEND_FLAG_ALLNODES_DEST);
           if (ip6_addr_istentative(netif_ip6_addr_state(inp, i))) {
             /* We shouldn't use this address either. */
             nd6_duplicate_addr_detected(inp, i);
@@ -512,7 +514,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
         return;
       }
 
-      i = nd6_find_neighbor_cache_entry(ip6_current_src_addr());
+      i = nd6_find_neighbor_cache_entry(ip6_current_src_addr(ip_data));
       if (i>= 0) {
         /* We already have a record for the solicitor. */
         if (neighbor_cache[i].state == ND6_INCOMPLETE) {
@@ -537,7 +539,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
         }
         neighbor_cache[i].netif = inp;
         MEMCPY(neighbor_cache[i].lladdr, lladdr_opt->addr, inp->hwaddr_len);
-        ip6_addr_set(&(neighbor_cache[i].next_hop_address), ip6_current_src_addr());
+        ip6_addr_set(&(neighbor_cache[i].next_hop_address), ip6_current_src_addr(ip_data));
 
         /* Receiving a message does not prove reachability: only in one direction.
          * Delay probe in case we get confirmation of reachability from upper layer (TCP). */
@@ -546,7 +548,7 @@ nd6_input(struct pbuf *p, struct netif *inp)
       }
 
       /* Send back a NA for us. Allocate the reply pbuf. */
-      nd6_send_na(inp, &target_address, ND6_FLAG_SOLICITED | ND6_FLAG_OVERRIDE);
+      nd6_send_na(ip_data, &target_address, ND6_FLAG_SOLICITED | ND6_FLAG_OVERRIDE);
     }
 
     break; /* ICMP6_TYPE_NS */
@@ -573,8 +575,8 @@ nd6_input(struct pbuf *p, struct netif *inp)
     ra_hdr = (struct ra_header *)p->payload;
 
     /* Check a subset of the other RFC 4861 Sec. 6.1.2 requirements. */
-    if (!ip6_addr_islinklocal(ip6_current_src_addr()) ||
-        IP6H_HOPLIM(ip6_current_header()) != ND6_HOPLIM || ra_hdr->code != 0) {
+    if (!ip6_addr_islinklocal(ip6_current_src_addr(ip_data)) ||
+        IP6H_HOPLIM(ip6_current_header(ip_data)) != ND6_HOPLIM || ra_hdr->code != 0) {
       pbuf_free(p);
       ND6_STATS_INC(nd6.proterr);
       ND6_STATS_INC(nd6.drop);
@@ -595,10 +597,10 @@ nd6_input(struct pbuf *p, struct netif *inp)
 #endif /* LWIP_IPV6_SEND_ROUTER_SOLICIT */
 
     /* Get the matching default router entry. */
-    i = nd6_get_router(ip6_current_src_addr(), inp);
+    i = nd6_get_router(ip6_current_src_addr(ip_data), inp);
     if (i < 0) {
       /* Create a new router entry. */
-      i = nd6_new_router(ip6_current_src_addr(), inp);
+      i = nd6_new_router(ip6_current_src_addr(ip_data), inp);
     }
 
     if (i < 0) {
@@ -825,8 +827,8 @@ nd6_input(struct pbuf *p, struct netif *inp)
     ip6_addr_assign_zone(&destination_address, IP6_UNICAST, inp);
 
     /* Check a subset of the other RFC 4861 Sec. 8.1 requirements. */
-    if (!ip6_addr_islinklocal(ip6_current_src_addr()) ||
-        IP6H_HOPLIM(ip6_current_header()) != ND6_HOPLIM ||
+    if (!ip6_addr_islinklocal(ip6_current_src_addr(ip_data)) ||
+        IP6H_HOPLIM(ip6_current_header(ip_data)) != ND6_HOPLIM ||
         redir_hdr->code != 0 || ip6_addr_ismulticast(&destination_address)) {
       pbuf_free(p);
       ND6_STATS_INC(nd6.proterr);
@@ -1246,18 +1248,19 @@ nd6_send_ns(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
 /**
  * Send a neighbor advertisement message
  *
- * @param netif the netif on which to send the message
+ * @param ip_data data for the received neighbor discovery packet computed by the IP input parser
  * @param target_addr the IPv6 target address for the ND message
  * @param flags one of ND6_SEND_FLAG_*
  */
 static void
-nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
+nd6_send_na(struct ip_globals *ip_data, const ip6_addr_t *target_addr, u8_t flags)
 {
   struct na_header *na_hdr;
   struct lladdr_option *lladdr_opt;
   struct pbuf *p;
   const ip6_addr_t *src_addr;
   const ip6_addr_t *dest_addr;
+  struct netif *netif;
   u16_t lladdr_opt_len;
 
   LWIP_ASSERT("target address is required", target_addr != NULL);
@@ -1268,6 +1271,7 @@ nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   src_addr = target_addr;
 
   /* Allocate a packet. */
+  netif = ip_data->current_input_netif;
   lladdr_opt_len = ((netif->hwaddr_len + 2) >> 3) + (((netif->hwaddr_len + 2) & 0x07) ? 1 : 0);
   p = pbuf_alloc(PBUF_IP, sizeof(struct na_header) + (lladdr_opt_len << 3), PBUF_RAM);
   if (p == NULL) {
@@ -1302,7 +1306,7 @@ nd6_send_na(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
     ip6_addr_assign_zone(&multicast_address, IP6_MULTICAST, netif);
     dest_addr = &multicast_address;
   } else {
-    dest_addr = ip6_current_src_addr();
+    dest_addr = ip6_current_src_addr(ip_data);
   }
 
 #if CHECKSUM_GEN_ICMP6

@@ -48,6 +48,7 @@
 
 #if LWIP_IPV6  /* don't build if not configured for use in lwipopts.h */
 
+#include "lwip/ip.h"
 #include "lwip/ip6_addr.h"
 #include "lwip/err.h"
 
@@ -67,7 +68,7 @@ struct pbuf;
 struct netif;
 
 void nd6_tmr(void);
-void nd6_input(struct pbuf *p, struct netif *inp);
+void nd6_input(struct pbuf *p, struct ip_globals *ip_data);
 void nd6_clear_destination_cache(void);
 struct netif *nd6_find_route(const ip6_addr_t *ip6addr);
 err_t nd6_get_next_hop_addr_or_queue(struct netif *netif, struct pbuf *q, const ip6_addr_t *ip6addr, const u8_t **hwaddrp);

@@ -199,7 +199,7 @@ static err_t dhcp_reboot(struct netif *netif);
 static void dhcp_set_state(struct dhcp *dhcp, u8_t new_state);
 
 /* receive, unfold, parse and free incoming messages */
-static void dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port);
+static void dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port);
 
 /* set the DHCP timers */
 static void dhcp_timeout(struct netif *netif);
@@ -1751,10 +1751,11 @@ decode_next:
  * If an incoming DHCP message is in response to us, then trigger the state machine
  */
 static void
-dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
+dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port)
 {
-  struct netif *netif = ip_current_input_netif();
+  struct netif *netif = ip_data->current_input_netif;
   struct dhcp *dhcp = netif_dhcp_data(netif);
+  const ip_addr_t *addr = &ip_data->current_iphdr_src;
   struct dhcp_msg *reply_msg = (struct dhcp_msg *)p->payload;
   u8_t msg_type;
   u8_t i;

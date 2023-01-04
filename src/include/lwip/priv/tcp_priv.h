@@ -74,7 +74,7 @@ void             tcp_fasttmr (void);
 void             tcp_txnow   (void);
 
 /* Only used by IP to pass a TCP segment to TCP: */
-void             tcp_input   (struct pbuf *p, struct netif *inp);
+void             tcp_input   (struct pbuf *p, struct ip_globals *ip_data);
 /* Used within the TCP code only: */
 struct tcp_pcb * tcp_alloc   (u8_t prio);
 void             tcp_free    (struct tcp_pcb *pcb);

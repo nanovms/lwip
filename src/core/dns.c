@@ -282,7 +282,7 @@ static err_t dns_lookup_local(const char *hostname, ip_addr_t *addr LWIP_DNS_ADD
 
 
 /* forward declarations */
-static void dns_recv(void *s, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port);
+static void dns_recv(void *s, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port);
 static void dns_check_entries(void);
 static void dns_call_found(u8_t idx, ip_addr_t *addr);
 
@@ -1167,7 +1167,7 @@ dns_correct_response(u8_t idx, u32_t ttl)
  * Receive input function for DNS response packets arriving for the dns UDP pcb.
  */
 static void
-dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
+dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port)
 {
   u8_t i;
   u16_t txid;
@@ -1218,7 +1218,7 @@ dns_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, 
         {
           /* Check whether response comes from the same network address to which the
              question was sent. (RFC 5452) */
-          if (!ip_addr_cmp(addr, &dns_servers[entry->server_idx])) {
+          if (!ip_addr_cmp(&ip_data->current_iphdr_src, &dns_servers[entry->server_idx])) {
             goto ignore_packet; /* ignore this packet */
           }
         }

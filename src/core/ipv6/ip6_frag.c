@@ -265,11 +265,12 @@ ip6_reass_remove_oldest_datagram(struct ip6_reassdata *ipr, int pbufs_needed)
  * Reassembles incoming IPv6 fragments into an IPv6 datagram.
  *
  * @param p points to the IPv6 Fragment Header
+ * @param ip_data data for the received packet computed by the IP input parser
  * @return NULL if reassembly is incomplete, pbuf pointing to
  *         IPv6 Header if reassembly is complete
  */
 struct pbuf *
-ip6_reass(struct pbuf *p)
+ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
 {
   struct ip6_reassdata *ipr, *ipr_prev;
   struct ip6_reass_helper *iprh, *iprh_tmp, *iprh_prev=NULL;
@@ -295,8 +296,8 @@ ip6_reass(struct pbuf *p)
   /* Calculate fragment length from IPv6 payload length.
    * Adjust for headers before Fragment Header.
    * And finally adjust by Fragment Header length. */
-  len = lwip_ntohs(ip6_current_header()->_plen);
-  hdrdiff = (u8_t*)p->payload - (const u8_t*)ip6_current_header();
+  len = lwip_ntohs(ip6_current_header(ip_data)->_plen);
+  hdrdiff = (u8_t*)p->payload - (const u8_t*)ip6_current_header(ip_data);
   LWIP_ASSERT("not a valid pbuf (ip6_input check missing?)", hdrdiff <= 0xFFFF);
   LWIP_ASSERT("not a valid pbuf (ip6_input check missing?)", hdrdiff >= IP6_HLEN);
   hdrdiff -= IP6_HLEN;
@@ -320,8 +321,8 @@ ip6_reass(struct pbuf *p)
        in the reassembly buffer. If so, we proceed with copying the
        fragment into the buffer. */
     if ((frag_hdr->_identification == ipr->identification) &&
-        ip6_addr_cmp_packed(ip6_current_src_addr(), &(IPV6_FRAG_SRC(ipr)), ipr->src_zone) &&
-        ip6_addr_cmp_packed(ip6_current_dest_addr(), &(IPV6_FRAG_DEST(ipr)), ipr->dest_zone)) {
+        ip6_addr_cmp_packed(ip6_current_src_addr(ip_data), &(IPV6_FRAG_SRC(ipr)), ipr->src_zone) &&
+        ip6_addr_cmp_packed(ip6_current_dest_addr(ip_data), &(IPV6_FRAG_DEST(ipr)), ipr->dest_zone)) {
       IP6_FRAG_STATS_INC(ip6_frag.cachehit);
       break;
     }
@@ -362,10 +363,10 @@ ip6_reass(struct pbuf *p)
      * Eventually, we will replace it when we get the first fragment
      * (it might be this one, in any case, it is done later). */
     /* need to use the none-const pointer here: */
-    ipr->iphdr = ip_data.current_ip6_header;
+    ipr->iphdr = ip_data->current_ip6_header;
 #if IPV6_FRAG_COPYHEADER
-    MEMCPY(&ipr->src, &ip6_current_header()->src, sizeof(ipr->src));
-    MEMCPY(&ipr->dest, &ip6_current_header()->dest, sizeof(ipr->dest));
+    MEMCPY(&ipr->src, &ip6_current_header(ip_data)->src, sizeof(ipr->src));
+    MEMCPY(&ipr->dest, &ip6_current_header(ip_data)->dest, sizeof(ipr->dest));
 #endif /* IPV6_FRAG_COPYHEADER */
 #if LWIP_IPV6_SCOPES
     /* Also store the address zone information.
@@ -374,8 +375,8 @@ ip6_reass(struct pbuf *p)
      * risk sending a "time exceeded" ICMP response over the wrong link.
      * Ideally, netif destruction would clean up matching pending reassembly
      * structures, but custom zone mappings would make that non-trivial. */
-    ipr->src_zone = ip6_addr_zone(ip6_current_src_addr());
-    ipr->dest_zone = ip6_addr_zone(ip6_current_dest_addr());
+    ipr->src_zone = ip6_addr_zone(ip6_current_src_addr(ip_data));
+    ipr->dest_zone = ip6_addr_zone(ip6_current_dest_addr(ip_data));
 #endif /* LWIP_IPV6_SCOPES */
     /* copy the fragmented packet id. */
     ipr->identification = frag_hdr->_identification;
@@ -509,7 +510,7 @@ ip6_reass(struct pbuf *p)
   /* Remember IPv6 header if this is the first fragment. */
   if (start == 0) {
     /* need to use the none-const pointer here: */
-    ipr->iphdr = ip_data.current_ip6_header;
+    ipr->iphdr = ip_data->current_ip6_header;
     /* Make a backup of the part of the packet data that we are about to
      * overwrite, so that we can restore the original later. */
     MEMCPY(ipr->orig_hdr, p->payload, sizeof(*iprh));

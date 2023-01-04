@@ -221,13 +221,14 @@ mld6_remove_group(struct netif *netif, struct mld_group *group)
  * Process an input MLD message. Called by icmp6_input.
  *
  * @param p the mld packet, p->payload pointing to the icmpv6 header
- * @param inp the netif on which this packet was received
+ * @param ip_data data for this packet computed by the IP input parser
  */
 void
-mld6_input(struct pbuf *p, struct netif *inp)
+mld6_input(struct pbuf *p, struct ip_globals *ip_data)
 {
   struct mld_header *mld_hdr;
   struct mld_group *group;
+  struct netif *inp = ip_data->current_input_netif;
 
   MLD6_STATS_INC(mld6.recv);
 
@@ -245,7 +246,7 @@ mld6_input(struct pbuf *p, struct netif *inp)
   switch (mld_hdr->type) {
   case ICMP6_TYPE_MLQ: /* Multicast listener query. */
     /* Is it a general query? */
-    if (ip6_addr_isallnodes_linklocal(ip6_current_dest_addr()) &&
+    if (ip6_addr_isallnodes_linklocal(ip6_current_dest_addr(ip_data)) &&
         ip6_addr_isany(&(mld_hdr->multicast_address))) {
       MLD6_STATS_INC(mld6.rx_general);
       /* Report all groups, except all nodes group, and if-local groups. */
@@ -262,7 +263,7 @@ mld6_input(struct pbuf *p, struct netif *inp)
        * We use IP6 destination address to have a memory aligned copy.
        * mld_hdr->multicast_address should be the same. */
       MLD6_STATS_INC(mld6.rx_group);
-      group = mld6_lookfor_group(inp, ip6_current_dest_addr());
+      group = mld6_lookfor_group(inp, ip6_current_dest_addr(ip_data));
       if (group != NULL) {
         /* Schedule a report. */
         mld6_delayed_report(group, mld_hdr->max_resp_delay);
@@ -274,7 +275,7 @@ mld6_input(struct pbuf *p, struct netif *inp)
      * We use IP6 destination address to have a memory aligned copy.
      * mld_hdr->multicast_address should be the same. */
     MLD6_STATS_INC(mld6.rx_report);
-    group = mld6_lookfor_group(inp, ip6_current_dest_addr());
+    group = mld6_lookfor_group(inp, ip6_current_dest_addr(ip_data));
     if (group != NULL) {
       /* If we are waiting to report, cancel it. */
       if (group->group_state == MLD6_GROUP_DELAYING_MEMBER) {

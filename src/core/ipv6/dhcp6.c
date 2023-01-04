@@ -134,7 +134,7 @@ static u8_t dhcp6_pcb_refcount;
 
 
 /* receive, unfold, parse and free incoming messages */
-static void dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port);
+static void dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port);
 
 /** Ensure DHCP PCB is allocated and bound */
 static err_t
@@ -1157,10 +1157,11 @@ dhcp6_parse_reply(struct pbuf *p, struct dhcp6 *dhcp6)
 }
 
 static void
-dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *addr, u16_t port)
+dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port)
 {
-  struct netif *netif = ip_current_input_netif();
+  struct netif *netif = ip_data->current_input_netif;
   struct dhcp6 *dhcp6 = netif_dhcp6_data(netif);
+  const ip_addr_t *addr = &ip_data->current_iphdr_src;
   struct dhcp6_msg *reply_msg = (struct dhcp6_msg *)p->payload;
   u8_t msg_type;
   u32_t xid;

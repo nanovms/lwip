@@ -71,11 +71,11 @@ struct udp_pcb;
  * @param arg user supplied argument (udp_pcb.recv_arg)
  * @param pcb the udp_pcb which received data
  * @param p the packet buffer that was received
- * @param addr the remote IP address from which the packet was received
+ * @param ip_data data for the received packet computed by the IP input parser
  * @param port the remote port from which the packet was received
  */
 typedef void (*udp_recv_fn)(void *arg, struct udp_pcb *pcb, struct pbuf *p,
-    const ip_addr_t *addr, u16_t port);
+    struct ip_globals *ip_data, u16_t port);
 
 /** the UDP protocol control block */
 struct udp_pcb {
@@ -160,7 +160,7 @@ err_t            udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p,
 #define          udp_is_flag_set(pcb, flag)        (((pcb)->flags & (flag)) != 0)
 
 /* The following functions are the lower layer interface to UDP. */
-void             udp_input      (struct pbuf *p, struct netif *inp);
+void             udp_input      (struct pbuf *p, struct ip_globals *ip_data);
 
 void             udp_init       (void);
 

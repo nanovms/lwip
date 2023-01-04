@@ -74,10 +74,10 @@ static void icmp_send_response(struct pbuf *p, u8_t type, u8_t code);
  * out the echo response.
  *
  * @param p the icmp echo request packet, p->payload pointing to the icmp header
- * @param inp the netif on which this packet was received
+ * @param ip_data data for this packet computed by the IP input parser
  */
 void
-icmp_input(struct pbuf *p, struct netif *inp)
+icmp_input(struct pbuf *p, struct ip_globals *ip_data)
 {
   u8_t type;
 #ifdef LWIP_DEBUG
@@ -91,7 +91,7 @@ icmp_input(struct pbuf *p, struct netif *inp)
   ICMP_STATS_INC(icmp.recv);
   MIB2_STATS_INC(mib2.icmpinmsgs);
 
-  iphdr_in = ip4_current_header();
+  iphdr_in = ip4_current_header(ip_data);
   hlen = IPH_HL_BYTES(iphdr_in);
   if (hlen < IP_HLEN) {
     LWIP_DEBUGF(ICMP_DEBUG, ("icmp_input: short IP header (%"S16_F" bytes) received\n", hlen));
@@ -116,9 +116,9 @@ icmp_input(struct pbuf *p, struct netif *inp)
       break;
     case ICMP_ECHO:
       MIB2_STATS_INC(mib2.icmpinechos);
-      src = ip4_current_dest_addr();
+      src = ip4_current_dest_addr(ip_data);
       /* multicast destination address? */
-      if (ip4_addr_ismulticast(ip4_current_dest_addr())) {
+      if (ip4_addr_ismulticast(ip4_current_dest_addr(ip_data))) {
 #if LWIP_MULTICAST_PING
         /* For multicast, use address of receiving interface as source address */
         src = netif_ip4_addr(inp);
@@ -128,7 +128,7 @@ icmp_input(struct pbuf *p, struct netif *inp)
 #endif /* LWIP_MULTICAST_PING */
       }
       /* broadcast destination address? */
-      if (ip4_addr_isbroadcast(ip4_current_dest_addr(), ip_current_netif())) {
+      if (ip4_addr_isbroadcast(ip4_current_dest_addr(ip_data), ip_data->current_netif)) {
 #if LWIP_BROADCAST_PING
         /* For broadcast, use address of receiving interface as source address */
         src = netif_ip4_addr(inp);
@@ -211,7 +211,7 @@ icmp_input(struct pbuf *p, struct netif *inp)
         err_t ret;
         struct ip_hdr *iphdr = (struct ip_hdr *)p->payload;
         ip4_addr_copy(iphdr->src, *src);
-        ip4_addr_copy(iphdr->dest, *ip4_current_src_addr());
+        ip4_addr_copy(iphdr->dest, *ip4_current_src_addr(ip_data));
         ICMPH_TYPE_SET(iecho, ICMP_ER);
 #if CHECKSUM_GEN_ICMP
         IF__NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_GEN_ICMP) {
@@ -248,7 +248,7 @@ icmp_input(struct pbuf *p, struct netif *inp)
 
         /* send an ICMP packet */
         ret = ip4_output_if(p, src, LWIP_IP_HDRINCL,
-                            ICMP_TTL, 0, IP_PROTO_ICMP, inp);
+                            ICMP_TTL, 0, IP_PROTO_ICMP, ip_data->current_input_netif);
         if (ret != ERR_OK) {
           LWIP_DEBUGF(ICMP_DEBUG, ("icmp_input: ip_output_if returned an error: %s\n", lwip_strerr(ret)));
         }
