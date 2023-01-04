@@ -87,9 +87,6 @@ u32_t retrans_timer = LWIP_ND6_RETRANS_TIMER; /* @todo implement this value in t
 static u8_t nd6_cached_neighbor_index;
 static netif_addr_idx_t nd6_cached_destination_index;
 
-/* Multicast address holder. */
-static ip6_addr_t multicast_address;
-
 static u8_t nd6_tmr_rs_reduction;
 
 /* Static buffer to parse RA packet options */
@@ -1186,6 +1183,7 @@ nd6_send_ns(struct netif *netif, const ip6_addr_t *target_addr, u8_t flags)
   struct pbuf *p;
   const ip6_addr_t *src_addr;
   u16_t lladdr_opt_len;
+  ip6_addr_t multicast_address;
 
   LWIP_ASSERT("target address is required", target_addr != NULL);
 
@@ -1262,6 +1260,7 @@ nd6_send_na(struct ip_globals *ip_data, const ip6_addr_t *target_addr, u8_t flag
   const ip6_addr_t *dest_addr;
   struct netif *netif;
   u16_t lladdr_opt_len;
+  ip6_addr_t multicast_address;
 
   LWIP_ASSERT("target address is required", target_addr != NULL);
 
@@ -1337,6 +1336,7 @@ nd6_send_rs(struct netif *netif)
   struct pbuf *p;
   const ip6_addr_t *src_addr;
   err_t err;
+  ip6_addr_t multicast_address;
   u16_t lladdr_opt_len = 0;
 
   /* Link-local source address, or unspecified address? */
@@ -2403,6 +2403,7 @@ void
 nd6_adjust_mld_membership(struct netif *netif, s8_t addr_idx, u8_t new_state)
 {
   u8_t old_state, old_member, new_member;
+  ip6_addr_t multicast_address;
 
   old_state = netif_ip6_addr_state(netif, addr_idx);
 
