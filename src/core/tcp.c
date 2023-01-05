@@ -370,12 +370,7 @@ tcp_close_shutdown(struct tcp_pcb *pcb, u8_t rst_on_unacked_data)
       tcp_pcb_purge(pcb);
       TCP_RMV_ACTIVE(pcb);
       /* Deallocate the pcb since we already sent a RST for it */
-      if (tcp_input_pcb == pcb) {
-        /* prevent using a deallocated pcb: free it from tcp_input later */
-        tcp_trigger_input_pcb_close();
-      } else {
-        tcp_free(pcb);
-      }
+      tcp_free(pcb);
       return ERR_OK;
     }
   }
