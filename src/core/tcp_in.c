@@ -251,6 +251,7 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
      for an active connection. */
   prev = NULL;
 
+  SYS_ARCH_LOCK(&tcp_mutex);
   for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
     LWIP_ASSERT("tcp_input: active pcb->state != CLOSED", pcb->state != CLOSED);
     LWIP_ASSERT("tcp_input: active pcb->state != TIME-WAIT", pcb->state != TIME_WAIT);
@@ -279,11 +280,23 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
         TCP_STATS_INC(tcp.cachehit);
       }
       LWIP_ASSERT("tcp_input: pcb->next != pcb (after cache)", pcb->next != pcb);
+      tcp_ref(pcb);
       break;
     }
     prev = pcb;
   }
 
+  if (pcb != NULL) {
+    SYS_ARCH_UNLOCK(&tcp_mutex);
+    tcp_lock(pcb);
+    if (pcb->state == CLOSED) {
+      /* This can happen if another input packet for this pcb has been processed in parallel. */
+      tcp_unlock(pcb);
+      tcp_unref(pcb);
+      pcb = NULL;
+      SYS_ARCH_LOCK(&tcp_mutex);
+    }
+  }
   if (pcb == NULL) {
     /* If it did not go to an active connection, we check the connections
        in the TIME-WAIT state. */
@@ -304,6 +317,8 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
            of the list since we are not very likely to receive that
            many segments for connections in TIME-WAIT. */
         LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: packed for TIME_WAITing connection.\n"));
+        tcp_ref(pcb);
+        SYS_ARCH_UNLOCK(&tcp_mutex);
 #ifdef LWIP_HOOK_TCP_INPACKET_PCB
         if (LWIP_HOOK_TCP_INPACKET_PCB(pcb, tcphdr, tcphdr_optlen, tcphdr_opt1len,
                                        tcphdr_opt2, p) == ERR_OK)
@@ -311,6 +326,7 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
         {
           tcp_timewait_input(pcb, tcphdr, &tcp_data, ip_data);
         }
+        tcp_unref(pcb);
         pbuf_free(p);
         return;
       }
@@ -374,6 +390,8 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
       } else {
         TCP_STATS_INC(tcp.cachehit);
       }
+      tcp_lpcb_ref(lpcb);
+      SYS_ARCH_UNLOCK(&tcp_mutex);
 
       LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: packed for LISTENing connection.\n"));
 #ifdef LWIP_HOOK_TCP_INPACKET_PCB
@@ -383,10 +401,13 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
       {
         pcb = tcp_listen_input(lpcb, tcphdr, &tcp_data, ip_data);
       }
+      tcp_lpcb_unref(lpcb);
       if (pcb == NULL) {
         pbuf_free(p);
         return;
       }
+    } else {
+      SYS_ARCH_UNLOCK(&tcp_mutex);
     }
   }
 
@@ -450,7 +471,9 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
            application that the connection is dead before we
            deallocate the PCB. */
         TCP_EVENT_ERR(pcb->state, pcb->errf, pcb->callback_arg, ERR_RST);
+        SYS_ARCH_LOCK(&tcp_mutex);
         tcp_pcb_remove(&tcp_active_pcbs, pcb);
+        SYS_ARCH_UNLOCK(&tcp_mutex);
         tcp_free(pcb);
       } else {
         err = ERR_OK;
@@ -565,6 +588,8 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
     /* Jump target if pcb has been aborted in a callback (by calling tcp_abort()).
        Below this line, 'pcb' may not be dereferenced! */
 aborted:
+    tcp_unlock(pcb);
+    tcp_unref(pcb);
 
     /* give up our reference to inseg.p */
     if (inseg.p != NULL) {
@@ -611,7 +636,9 @@ tcp_input_delayed_close(struct tcp_pcb *pcb, u8_t recv_flags)
           ensure the application doesn't continue using the PCB. */
       TCP_EVENT_ERR(pcb->state, pcb->errf, pcb->callback_arg, ERR_CLSD);
     }
+    SYS_ARCH_LOCK(&tcp_mutex);
     tcp_pcb_remove(&tcp_active_pcbs, pcb);
+    SYS_ARCH_UNLOCK(&tcp_mutex);
     tcp_free(pcb);
     return 1;
   }
@@ -779,9 +806,6 @@ tcp_listen_new_conn(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct t
   /* inherit socket options */
   npcb->so_options = pcb->so_options & SOF_INHERITED;
   npcb->netif_idx = pcb->netif_idx;
-  /* Register the new PCB so that we can begin receiving segments
-     for it. */
-  TCP_REG_ACTIVE(npcb);
 
   /* Parse any options in the incoming packet. */
   tcp_parseopt(npcb, tcphdr, tcp_data);
@@ -796,6 +820,14 @@ tcp_listen_new_conn(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct t
     return NULL;
   }
 #endif
+
+  tcp_ref(npcb);
+  tcp_lock(npcb);
+
+  /* Register the new PCB so that we can begin receiving segments for it. */
+  SYS_ARCH_LOCK(&tcp_mutex);
+  TCP_REG_ACTIVE(npcb);
+  SYS_ARCH_UNLOCK(&tcp_mutex);
 
   return npcb;
 }
@@ -845,27 +877,36 @@ tcp_listen_input(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct tcp_
     }
 #endif
     LWIP_DEBUGF(TCP_RST_DEBUG, ("tcp_listen_input: ACK in LISTEN, sending reset\n"));
+    tcp_lock(pcb);
     tcp_rst((const struct tcp_pcb *)pcb, tcphdr->ackno, tcphdr->seqno + tcp_data->len, &ip_data->current_iphdr_dest,
             &ip_data->current_iphdr_src, tcphdr->dest, tcphdr->src);
+    tcp_unlock(pcb);
   } else if (tcp_data->flags & TCP_SYN) {
     LWIP_DEBUGF(TCP_DEBUG, ("TCP connection request %"U16_F" -> %"U16_F".\n", tcphdr->src, tcphdr->dest));
 #if TCP_LISTEN_BACKLOG
+    tcp_lock(pcb);
     if (pcb->accepts_pending >= pcb->backlog) {
+      tcp_unlock(pcb);
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: listen backlog exceeded for port %"U16_F"\n", tcphdr->dest));
       return NULL;
     }
     if (pcb->syn_pending >= pcb->backlog) {
       LWIP_DEBUGF(TCP_DEBUG, ("tcp_listen_input: syn queue length exceeded for port %"U16_F"\n", tcphdr->dest));
       tcp_syncookie_send(pcb, tcphdr, tcp_data, ip_data);
+      tcp_unlock(pcb);
       return NULL;
     }
 #endif /* TCP_LISTEN_BACKLOG */
     npcb = tcp_listen_new_conn(pcb, tcphdr, tcp_data, ip_data, tcphdr->seqno);
     if (npcb == NULL) {
+#if TCP_LISTEN_BACKLOG
+      tcp_unlock(pcb);
+#endif /* TCP_LISTEN_BACKLOG */
       return NULL;
     }
 #if TCP_LISTEN_BACKLOG
     pcb->syn_pending++;
+    tcp_unlock(pcb);
 #endif /* TCP_LISTEN_BACKLOG */
     iss = tcp_next_iss(npcb);
     npcb->snd_wl2 = iss;
@@ -881,9 +922,11 @@ tcp_listen_input(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct tcp_
     rc = tcp_enqueue_flags(npcb, TCP_SYN | TCP_ACK);
     if (rc != ERR_OK) {
       tcp_abandon(npcb, 0);
-      return NULL;
+    } else {
+      tcp_output(npcb);
     }
-    tcp_output(npcb);
+    tcp_unlock(npcb);
+    tcp_unref(npcb);
   }
   return NULL;
 }
@@ -910,6 +953,7 @@ tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp_input
   }
 
   LWIP_ASSERT("tcp_timewait_input: invalid pcb", pcb != NULL);
+  tcp_lock(pcb);
 
   /* - fourth, check the SYN bit, */
   if (tcp_data->flags & TCP_SYN) {
@@ -919,7 +963,7 @@ tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp_input
       /* If the SYN is in the window it is an error, send a reset */
       tcp_rst(pcb, tcphdr->ackno, tcphdr->seqno + tcp_data->len, &ip_data->current_iphdr_dest,
               &ip_data->current_iphdr_src, tcphdr->dest, tcphdr->src);
-      return;
+      goto unlock;
     }
   } else if (tcp_data->flags & TCP_FIN) {
     /* - eighth, check the FIN bit: Remain in the TIME-WAIT state.
@@ -932,7 +976,8 @@ tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp_input
     tcp_ack_now(pcb);
     tcp_output(pcb);
   }
-  return;
+unlock:
+  tcp_unlock(pcb);
 }
 
 /**
@@ -1105,13 +1150,16 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
             LWIP_ASSERT("pcb->listener->accept != NULL", pcb->listener->accept != NULL);
 #endif
 #if TCP_LISTEN_BACKLOG
+            tcp_lock(pcb->listener);
             LWIP_ASSERT("syn_pending != 0", pcb->listener->syn_pending != 0);
             pcb->listener->syn_pending--;
             if (pcb->listener->accepts_pending >= pcb->listener->backlog) {
               LWIP_DEBUGF(TCP_DEBUG, ("tcp_process: listen backlog exceeded for port %"U16_F"\n", pcb->listener->local_port));
+              tcp_unlock(pcb->listener);
               tcp_abort(pcb);
               return ERR_ABRT;
             }
+            tcp_unlock(pcb->listener);
 #endif /* TCP_LISTEN_BACKLOG */
             /* Call the accept function. */
             TCP_EVENT_ACCEPT(pcb->listener, pcb, pcb->callback_arg, ERR_OK, err);
@@ -1171,9 +1219,11 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
                       ("TCP connection closed: FIN_WAIT_1 %"U16_F" -> %"U16_F".\n", inseg->tcphdr->src, inseg->tcphdr->dest));
           tcp_ack_now(pcb);
           tcp_pcb_purge(pcb);
+          SYS_ARCH_LOCK(&tcp_mutex);
           TCP_RMV_ACTIVE(pcb);
           pcb->state = TIME_WAIT;
           TCP_REG(&tcp_tw_pcbs, pcb);
+          SYS_ARCH_UNLOCK(&tcp_mutex);
         } else {
           tcp_ack_now(pcb);
           pcb->state = CLOSING;
@@ -1189,9 +1239,11 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
         LWIP_DEBUGF(TCP_DEBUG, ("TCP connection closed: FIN_WAIT_2 %"U16_F" -> %"U16_F".\n", inseg->tcphdr->src, inseg->tcphdr->dest));
         tcp_ack_now(pcb);
         tcp_pcb_purge(pcb);
+        SYS_ARCH_LOCK(&tcp_mutex);
         TCP_RMV_ACTIVE(pcb);
         pcb->state = TIME_WAIT;
         TCP_REG(&tcp_tw_pcbs, pcb);
+        SYS_ARCH_UNLOCK(&tcp_mutex);
       }
       break;
     case CLOSING:
@@ -1199,9 +1251,11 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
       if ((flags & TCP_ACK) && ackno == pcb->snd_nxt && pcb->unsent == NULL) {
         LWIP_DEBUGF(TCP_DEBUG, ("TCP connection closed: CLOSING %"U16_F" -> %"U16_F".\n", inseg->tcphdr->src, inseg->tcphdr->dest));
         tcp_pcb_purge(pcb);
+        SYS_ARCH_LOCK(&tcp_mutex);
         TCP_RMV_ACTIVE(pcb);
         pcb->state = TIME_WAIT;
         TCP_REG(&tcp_tw_pcbs, pcb);
+        SYS_ARCH_UNLOCK(&tcp_mutex);
       }
       break;
     case LAST_ACK:

@@ -552,6 +552,14 @@ void sys_arch_unprotect(sys_prot_t pval);
                               } while(0)
 #endif /* SYS_ARCH_LOCKED */
 
+#ifndef SYS_ARCH_LOCK_INIT
+
+#define SYS_ARCH_LOCK_INIT(l)
+#define SYS_ARCH_LOCK(l)
+#define SYS_ARCH_UNLOCK(l)
+#define SYS_ARCH_TRYLOCK(l)
+
+#endif
 
 #ifdef __cplusplus
 }

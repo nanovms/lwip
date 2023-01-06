@@ -397,6 +397,7 @@ icmp_send_response(struct pbuf *p, u8_t type, u8_t code)
 #endif
     ICMP_STATS_INC(icmp.xmit);
     ip4_output_if(q, NULL, &iphdr_src, ICMP_TTL, 0, IP_PROTO_ICMP, netif);
+    netif_unref(netif);
   }
   pbuf_free(q);
 }

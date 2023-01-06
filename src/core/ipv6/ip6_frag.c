@@ -119,6 +119,7 @@ ip6_reass_tmr(void)
     sizeof(struct ip6_reass_helper) <= IP6_FRAG_HLEN);
 #endif /* !IPV6_FRAG_COPYHEADER */
 
+  SYS_ARCH_LOCK(&ip_mutex);
   r = reassdatagrams;
   while (r != NULL) {
     /* Decrement the timer. Once it reaches 0,
@@ -135,6 +136,7 @@ ip6_reass_tmr(void)
       ip6_reass_free_complete_datagram(tmp);
      }
    }
+  SYS_ARCH_UNLOCK(&ip_mutex);
 }
 
 /**
@@ -313,6 +315,7 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
     IP6_FRAG_STATS_INC(ip6_frag.proterr);
     goto nullreturn;
   }
+  SYS_ARCH_LOCK(&ip_mutex);
 
   /* Look for the datagram the fragment belongs to in the current datagram queue,
    * remembering the previous in the queue for later dequeueing. */
@@ -348,7 +351,7 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
 #endif /* IP_REASS_FREE_OLDEST */
       {
         IP6_FRAG_STATS_INC(ip6_frag.memerr);
-        goto nullreturn;
+        goto unlock_nullreturn;
       }
     }
 
@@ -402,7 +405,7 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
       /* @todo: send ICMPv6 time exceeded here? */
       /* drop this pbuf */
       IP6_FRAG_STATS_INC(ip6_frag.memerr);
-      goto nullreturn;
+      goto unlock_nullreturn;
     }
   }
 
@@ -438,13 +441,13 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
       if (end > iprh_tmp->start) {
         /* fragment overlaps with following, throw away */
         IP6_FRAG_STATS_INC(ip6_frag.proterr);
-        goto nullreturn;
+        goto unlock_nullreturn;
       }
       if (iprh_prev != NULL) {
         if (start < iprh_prev->end) {
           /* fragment overlaps with previous, throw away */
           IP6_FRAG_STATS_INC(ip6_frag.proterr);
-          goto nullreturn;
+          goto unlock_nullreturn;
         }
       }
 #endif /* IP_REASS_CHECK_OVERLAP */
@@ -460,12 +463,12 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
       break;
     } else if (start == iprh_tmp->start) {
       /* received the same datagram twice: no need to keep the datagram */
-      goto nullreturn;
+      goto unlock_nullreturn;
 #if IP_REASS_CHECK_OVERLAP
     } else if (start < iprh_tmp->end) {
       /* overlap: no need to keep the new datagram */
       IP6_FRAG_STATS_INC(ip6_frag.proterr);
-      goto nullreturn;
+      goto unlock_nullreturn;
 #endif /* IP_REASS_CHECK_OVERLAP */
     } else {
       /* Check if the fragments received so far have no gaps. */
@@ -651,6 +654,8 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
     LWIP_ASSERT("ip6_reass_pbufcount >= clen", ip6_reass_pbufcount >= clen);
     ip6_reass_pbufcount = (u16_t)(ip6_reass_pbufcount - clen);
 
+    SYS_ARCH_UNLOCK(&ip_mutex);
+
     /* Move pbuf back to IPv6 header. This should never fail. */
     if (pbuf_header_force(p, (s16_t)((u8_t*)p->payload - (u8_t*)iphdr_ptr))) {
       LWIP_ASSERT("ip6_reass: moving p->payload to ip6 header failed\n", 0);
@@ -661,9 +666,13 @@ ip6_reass(struct pbuf *p, struct ip_globals *ip_data)
     /* Return the pbuf chain */
     return p;
   }
+  SYS_ARCH_UNLOCK(&ip_mutex);
+
   /* the datagram is not (yet?) reassembled completely */
   return NULL;
 
+unlock_nullreturn:
+  SYS_ARCH_UNLOCK(&ip_mutex);
 nullreturn:
   IP6_FRAG_STATS_INC(ip6_frag.drop);
   pbuf_free(p);

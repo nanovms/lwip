@@ -106,8 +106,12 @@
 static netif_ext_callback_t *ext_callback;
 #endif
 
+/* The netif mutex must be held when using the NETIF_FOREACH() macro. */
 #if !LWIP_SINGLE_NETIF
 struct netif *netif_list;
+#define NETIF_FOREACH(netif) for ((netif) = netif_list; (netif) != NULL; (netif) = (netif)->next)
+#else
+#define NETIF_FOREACH(netif) if (((netif) = netif_default) != NULL)
 #endif /* !LWIP_SINGLE_NETIF */
 struct netif *netif_default;
 
@@ -117,6 +121,8 @@ static u8_t netif_num;
 #if LWIP_NUM_NETIF_CLIENT_DATA > 0
 static u8_t netif_client_id;
 #endif
+
+static sys_lock_t netif_mutex;
 
 #define NETIF_REPORT_TYPE_IPV4  0x01
 #define NETIF_REPORT_TYPE_IPV6  0x02
@@ -139,6 +145,7 @@ static err_t netif_loop_output_ipv6(struct netif *netif, struct pbuf *p, const i
 
 
 static struct netif loop_netif;
+static sys_lock_t loop_netif_mutex;
 
 /**
  * Initialize a lwip network interface structure for a loopback interface
@@ -202,6 +209,21 @@ netif_init(void)
   netif_set_up(&loop_netif);
 
 #endif /* LWIP_HAVE_LOOPIF */
+}
+
+static void
+netif_set_default_locked(struct netif *netif)
+{
+  if (netif == NULL) {
+    /* remove default route */
+    mib2_remove_route_ip4(1, netif);
+  } else {
+    /* install default route */
+    mib2_add_route_ip4(1, netif);
+  }
+  netif_default = netif;
+  LWIP_DEBUGF(NETIF_DEBUG, ("netif: setting default interface %c%c\n",
+                            netif ? netif->name[0] : '\'', netif ? netif->name[1] : '\''));
 }
 
 /**
@@ -326,6 +348,7 @@ netif_add(struct netif *netif,
   NETIF_SET_CHECKSUM_CTRL(netif, NETIF_CHECKSUM_ENABLE_ALL);
   netif->mtu = 0;
   netif->flags = 0;
+  netif->refcount = 1;
 #ifdef netif_get_client_data
   memset(netif->client_data, 0, sizeof(netif->client_data));
 #endif /* LWIP_NUM_NETIF_CLIENT_DATA */
@@ -355,6 +378,7 @@ netif_add(struct netif *netif,
 
   /* remember netif specific state information data */
   netif->state = state;
+  SYS_ARCH_LOCK(&netif_mutex);
   netif->num = netif_num;
   netif->input = input;
 
@@ -412,6 +436,7 @@ netif_add(struct netif *netif,
   netif->next = netif_list;
   netif_list = netif;
 #endif /* "LWIP_SINGLE_NETIF */
+  SYS_ARCH_UNLOCK(&netif_mutex);
   mib2_netif_added(netif);
 
 #if LWIP_IGMP
@@ -736,6 +761,7 @@ netif_set_addr(struct netif *netif, const ip4_addr_t *ipaddr, const ip4_addr_t *
 void
 netif_remove(struct netif *netif)
 {
+  u32_t refcount;
 #if LWIP_IPV6
   int i;
 #endif
@@ -779,10 +805,12 @@ netif_remove(struct netif *netif)
 
   mib2_remove_ip4(netif);
 
+  SYS_ARCH_LOCK(&netif_mutex);
+
   /* this netif is default? */
   if (netif_default == netif) {
     /* reset default netif */
-    netif_set_default(NULL);
+    netif_set_default_locked(NULL);
   }
 #if !LWIP_SINGLE_NETIF
   /*  is it the first netif? */
@@ -798,16 +826,29 @@ netif_remove(struct netif *netif)
       }
     }
     if (tmp_netif == NULL) {
+      SYS_ARCH_UNLOCK(&netif_mutex);
       return; /* netif is not on the list */
     }
   }
 #endif /* !LWIP_SINGLE_NETIF */
+
+  SYS_ARCH_UNLOCK(&netif_mutex);
+
   mib2_netif_removed(netif);
 #if LWIP_NETIF_REMOVE_CALLBACK
   if (netif->remove_callback) {
     netif->remove_callback(netif);
   }
 #endif /* LWIP_NETIF_REMOVE_CALLBACK */
+
+  /* Wait for the reference count to drop to zero, so that the netif struct can be safely freed by
+   * the caller. */
+  refcount = netif_unref(netif) - 1;
+  while (refcount > 0) {
+    SYS_PAUSE();
+    refcount = *(volatile u32_t *)&netif->refcount;
+  }
+
   LWIP_DEBUGF( NETIF_DEBUG, ("netif_remove: removed netif\n") );
 }
 
@@ -822,17 +863,21 @@ void
 netif_set_default(struct netif *netif)
 {
   LWIP_ASSERT_CORE_LOCKED();
+  SYS_ARCH_LOCK(&netif_mutex);
+  netif_set_default_locked(netif);
+  SYS_ARCH_UNLOCK(&netif_mutex);
+}
 
-  if (netif == NULL) {
-    /* remove default route */
-    mib2_remove_route_ip4(1, netif);
-  } else {
-    /* install default route */
-    mib2_add_route_ip4(1, netif);
-  }
-  netif_default = netif;
-  LWIP_DEBUGF(NETIF_DEBUG, ("netif: setting default interface %c%c\n",
-                            netif ? netif->name[0] : '\'', netif ? netif->name[1] : '\''));
+struct netif *netif_get_default(void)
+{
+  struct netif *netif;
+
+  SYS_ARCH_LOCK(&netif_mutex);
+  netif = netif_default;
+  if (netif != NULL)
+      netif_ref(netif);
+  SYS_ARCH_UNLOCK(&netif_mutex);
+  return netif;
 }
 
 /**
@@ -1094,7 +1139,6 @@ netif_loop_output(struct netif *netif, struct pbuf *p)
 #if LWIP_NETIF_LOOPBACK_MULTITHREADING
   u8_t schedule_poll = 0;
 #endif /* LWIP_NETIF_LOOPBACK_MULTITHREADING */
-  SYS_ARCH_DECL_PROTECT(lev);
 
   LWIP_ASSERT("netif_loop_output: invalid netif", netif != NULL);
   LWIP_ASSERT("netif_loop_output: invalid pbuf", p != NULL);
@@ -1138,7 +1182,7 @@ netif_loop_output(struct netif *netif, struct pbuf *p)
     /* nothing to do here, just get to the last pbuf */
   }
 
-  SYS_ARCH_PROTECT(lev);
+  SYS_ARCH_LOCK(&loop_netif_mutex);
   if (netif->loop_first != NULL) {
     LWIP_ASSERT("if first != NULL, last must also be != NULL", netif->loop_last != NULL);
     netif->loop_last->next = r;
@@ -1151,7 +1195,7 @@ netif_loop_output(struct netif *netif, struct pbuf *p)
     schedule_poll = 1;
 #endif /* LWIP_NETIF_LOOPBACK_MULTITHREADING */
   }
-  SYS_ARCH_UNPROTECT(lev);
+  SYS_ARCH_UNLOCK(&loop_netif_mutex);
 
   LINK_STATS_INC(link.xmit);
   MIB2_STATS_NETIF_ADD(stats_if, ifoutoctets, p->tot_len);
@@ -1206,12 +1250,11 @@ netif_poll(struct netif *netif)
   struct netif *stats_if = netif;
 #endif /* LWIP_HAVE_LOOPIF */
 #endif /* MIB2_STATS */
-  SYS_ARCH_DECL_PROTECT(lev);
 
   LWIP_ASSERT("netif_poll: invalid netif", netif != NULL);
 
-  /* Get a packet from the list. With SYS_LIGHTWEIGHT_PROT=1, this is protected */
-  SYS_ARCH_PROTECT(lev);
+  /* Get a packet from the list. */
+  SYS_ARCH_LOCK(&loop_netif_mutex);
   while (netif->loop_first != NULL) {
     struct pbuf *in, *in_end;
 #if LWIP_LOOPBACK_MAX_PBUFS
@@ -1244,7 +1287,7 @@ netif_poll(struct netif *netif)
     }
     /* De-queue the pbuf from its successors on the 'loop_' list. */
     in_end->next = NULL;
-    SYS_ARCH_UNPROTECT(lev);
+    SYS_ARCH_UNLOCK(&loop_netif_mutex);
 
     in->if_idx = netif_get_index(netif);
 
@@ -1255,23 +1298,19 @@ netif_poll(struct netif *netif)
     if (ip_input(in, netif) != ERR_OK) {
       pbuf_free(in);
     }
-    SYS_ARCH_PROTECT(lev);
+    SYS_ARCH_LOCK(&loop_netif_mutex);
   }
-  SYS_ARCH_UNPROTECT(lev);
+  SYS_ARCH_UNLOCK(&loop_netif_mutex);
 }
 
 #if !LWIP_NETIF_LOOPBACK_MULTITHREADING
 /**
- * Calls netif_poll() for every netif on the netif_list.
+ * Calls netif_poll() for the loopback interface.
  */
 void
-netif_poll_all(void)
+netif_poll_loopback(void)
 {
-  struct netif *netif;
-  /* loop through netifs */
-  NETIF_FOREACH(netif) {
-    netif_poll(netif);
-  }
+  netif_poll(&loop_netif);
 }
 #endif /* !LWIP_NETIF_LOOPBACK_MULTITHREADING */
 #endif /* ENABLE_LOOPBACK */
@@ -1638,7 +1677,10 @@ netif_name_to_index(const char *name)
 {
   struct netif *netif = netif_find(name);
   if (netif != NULL) {
-    return netif_get_index(netif);
+    u8_t index = netif_get_index(netif);
+
+    netif_unref(netif);
+    return index;
   }
   /* No name found, return invalid index */
   return NETIF_NO_INDEX;
@@ -1660,6 +1702,7 @@ netif_index_to_name(u8_t idx, char *name)
   if (netif != NULL) {
     name[0] = netif->name[0];
     name[1] = netif->name[1];
+    netif_unref(netif);
     lwip_itoa(&name[2], NETIF_NAMESIZE - 2, netif_index_to_num(idx));
     return name;
   }
@@ -1680,11 +1723,15 @@ netif_get_by_index(u8_t idx)
   LWIP_ASSERT_CORE_LOCKED();
 
   if (idx != NETIF_NO_INDEX) {
+    SYS_ARCH_LOCK(&netif_mutex);
     NETIF_FOREACH(netif) {
       if (idx == netif_get_index(netif)) {
+        netif_ref(netif);
+        SYS_ARCH_UNLOCK(&netif_mutex);
         return netif; /* found! */
       }
     }
+    SYS_ARCH_UNLOCK(&netif_mutex);
   }
 
   return NULL;
@@ -1711,16 +1758,37 @@ netif_find(const char *name)
 
   num = (u8_t)atoi(&name[2]);
 
+  SYS_ARCH_LOCK(&netif_mutex);
   NETIF_FOREACH(netif) {
     if (num == netif->num &&
         name[0] == netif->name[0] &&
         name[1] == netif->name[1]) {
       LWIP_DEBUGF(NETIF_DEBUG, ("netif_find: found %c%c\n", name[0], name[1]));
-      return netif;
+      netif_ref(netif);
+      goto out;
     }
   }
   LWIP_DEBUGF(NETIF_DEBUG, ("netif_find: didn't find %c%c\n", name[0], name[1]));
-  return NULL;
+out:
+  SYS_ARCH_UNLOCK(&netif_mutex);
+  return netif;
+}
+
+void netif_iterate(u8_t (*handler)(struct netif *n, void *priv), void *priv)
+{
+  SYS_ARCH_LOCK(&netif_mutex);
+#if LWIP_SINGLE_NETIF
+  if (netif_default != NULL)
+      handler(netif_default, priv);
+#else
+  struct netif *next;
+  for (struct netif *netif = netif_list; netif; netif = next) {
+    next = netif->next;
+    if (handler(netif, priv))
+      break;
+  }
+#endif
+  SYS_ARCH_UNLOCK(&netif_mutex);
 }
 
 #if LWIP_NETIF_EXT_STATUS_CALLBACK

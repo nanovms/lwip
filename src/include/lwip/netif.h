@@ -348,6 +348,8 @@ struct netif {
   /** number of this interface. Used for @ref if_api and @ref netifapi_netif, 
    * as well as for IPv6 zones */
   u8_t num;
+  /** reference count */
+  u32_t refcount;
 #if LWIP_IPV6_AUTOCONFIG
   /** is this netif enabled for IPv6 autoconfiguration */
   u8_t ip6_autoconfig_enabled;
@@ -398,16 +400,6 @@ struct netif {
 #define IF__NETIF_CHECKSUM_ENABLED(netif, chksumflag)
 #endif /* LWIP_CHECKSUM_CTRL_PER_NETIF */
 
-#if LWIP_SINGLE_NETIF
-#define NETIF_FOREACH(netif) if (((netif) = netif_default) != NULL)
-#else /* LWIP_SINGLE_NETIF */
-/** The list of network interfaces. */
-extern struct netif *netif_list;
-#define NETIF_FOREACH(netif) for ((netif) = netif_list; (netif) != NULL; (netif) = (netif)->next)
-#endif /* LWIP_SINGLE_NETIF */
-/** The default network interface. */
-extern struct netif *netif_default;
-
 void netif_init(void);
 
 struct netif *netif_add_noaddr(struct netif *netif, void *state, netif_init_fn init, netif_input_fn input);
@@ -429,7 +421,13 @@ void netif_remove(struct netif * netif);
    structure. */
 struct netif *netif_find(const char *name);
 
+void netif_iterate(u8_t (*handler)(struct netif *n, void *priv), void *priv);
+
+struct netif *netif_get_default(void);
 void netif_set_default(struct netif *netif);
+
+#define netif_ref(n)    SYS_ARCH_INC((n)->refcount, 1)
+#define netif_unref(n)  SYS_ARCH_DEC((n)->refcount, 1)
 
 #if LWIP_IPV4
 void netif_set_ipaddr(struct netif *netif, const ip4_addr_t *ipaddr);
@@ -500,7 +498,7 @@ void netif_set_link_callback(struct netif *netif, netif_status_callback_fn link_
 err_t netif_loop_output(struct netif *netif, struct pbuf *p);
 void netif_poll(struct netif *netif);
 #if !LWIP_NETIF_LOOPBACK_MULTITHREADING
-void netif_poll_all(void);
+void netif_poll_loopback(void);
 #endif /* !LWIP_NETIF_LOOPBACK_MULTITHREADING */
 #endif /* ENABLE_LOOPBACK */
 

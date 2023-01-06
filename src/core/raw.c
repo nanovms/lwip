@@ -355,6 +355,7 @@ raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *ipaddr)
 {
   struct netif *netif;
   const ip_addr_t *src_ip;
+  err_t err;
 
   if ((pcb == NULL) || (ipaddr == NULL) || !IP_ADDR_PCB_VERSION_MATCH(pcb, ipaddr)) {
     return ERR_VAL;
@@ -392,7 +393,8 @@ raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *ipaddr)
     src_ip = ip_netif_get_local_ip(netif, ipaddr);
 #if LWIP_IPV6
     if (src_ip == NULL) {
-      return ERR_RTE;
+      err = ERR_RTE;
+      goto out;
     }
 #endif /* LWIP_IPV6 */
   } else {
@@ -400,7 +402,10 @@ raw_sendto(struct raw_pcb *pcb, struct pbuf *p, const ip_addr_t *ipaddr)
     src_ip = &pcb->local_ip;
   }
 
-  return raw_sendto_if_src(pcb, p, ipaddr, netif, src_ip);
+  err = raw_sendto_if_src(pcb, p, ipaddr, netif, src_ip);
+out:
+  netif_unref(netif);
+  return err;
 }
 
 /**

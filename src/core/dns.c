@@ -299,6 +299,7 @@ static u8_t                   dns_seqno;
 static struct dns_table_entry dns_table[DNS_TABLE_SIZE];
 static struct dns_req_entry   dns_requests[DNS_MAX_REQUESTS];
 static ip_addr_t              dns_servers[DNS_MAX_SERVERS];
+static sys_lock_t             dns_mutex;
 
 #if LWIP_IPV4
 const ip_addr_t dns_mquery_v4group = DNS_MQUERY_IPV4_GROUP_INIT;
@@ -361,11 +362,13 @@ void
 dns_setserver(u8_t numdns, const ip_addr_t *dnsserver)
 {
   if (numdns < DNS_MAX_SERVERS) {
+    SYS_ARCH_LOCK(&dns_mutex);
     if (dnsserver != NULL) {
       dns_servers[numdns] = (*dnsserver);
     } else {
       dns_servers[numdns] = *IP_ADDR_ANY;
     }
+    SYS_ARCH_UNLOCK(&dns_mutex);
   }
 }
 
@@ -1125,9 +1128,11 @@ dns_check_entries(void)
 {
   u8_t i;
 
+  SYS_ARCH_LOCK(&dns_mutex);
   for (i = 0; i < DNS_TABLE_SIZE; ++i) {
     dns_check_entry(i);
   }
+  SYS_ARCH_UNLOCK(&dns_mutex);
 }
 
 /**
@@ -1551,28 +1556,33 @@ dns_gethostbyname_addrtype(const char *hostname, ip_addr_t *addr, dns_found_call
 #if LWIP_DNS_SUPPORT_MDNS_QUERIES
   u8_t is_mdns;
 #endif
+  err_t err;
   /* not initialized or no valid server yet, or invalid addr pointer
    * or invalid hostname or invalid hostname length */
   if ((addr == NULL) ||
       (!hostname) || (!hostname[0])) {
     return ERR_ARG;
   }
+  SYS_ARCH_LOCK(&dns_mutex);
 #if ((LWIP_DNS_SECURE & LWIP_DNS_SECURE_RAND_SRC_PORT) == 0)
   if (dns_pcbs[0] == NULL) {
-    return ERR_ARG;
+    err = ERR_ARG;
+    goto out;
   }
 #endif
   hostnamelen = strlen(hostname);
   if (hostnamelen >= DNS_MAX_NAME_LENGTH) {
     LWIP_DEBUGF(DNS_DEBUG, ("dns_gethostbyname: name too long to resolve"));
-    return ERR_ARG;
+    err = ERR_ARG;
+    goto out;
   }
 
 
 #if LWIP_HAVE_LOOPIF
   if (strcmp(hostname, "localhost") == 0) {
     ip_addr_set_loopback(LWIP_DNS_ADDRTYPE_IS_IPV6(dns_addrtype), addr);
-    return ERR_OK;
+    err = ERR_OK;
+    goto out;
   }
 #endif /* LWIP_HAVE_LOOPIF */
 
@@ -1583,12 +1593,14 @@ dns_gethostbyname_addrtype(const char *hostname, ip_addr_t *addr, dns_found_call
         (IP_IS_V4(addr) && (dns_addrtype != LWIP_DNS_ADDRTYPE_IPV6)))
 #endif /* LWIP_IPV4 && LWIP_IPV6 */
     {
-      return ERR_OK;
+      err = ERR_OK;
+      goto out;
     }
   }
   /* already have this address cached? */
   if (dns_lookup(hostname, addr LWIP_DNS_ADDRTYPE_ARG(dns_addrtype)) == ERR_OK) {
-    return ERR_OK;
+    err = ERR_OK;
+    goto out;
   }
 #if LWIP_IPV4 && LWIP_IPV6
   if ((dns_addrtype == LWIP_DNS_ADDRTYPE_IPV4_IPV6) || (dns_addrtype == LWIP_DNS_ADDRTYPE_IPV6_IPV4)) {
@@ -1600,7 +1612,8 @@ dns_gethostbyname_addrtype(const char *hostname, ip_addr_t *addr, dns_found_call
       fallback = LWIP_DNS_ADDRTYPE_IPV4;
     }
     if (dns_lookup(hostname, addr LWIP_DNS_ADDRTYPE_ARG(fallback)) == ERR_OK) {
-      return ERR_OK;
+      err = ERR_OK;
+      goto out;
     }
   }
 #else /* LWIP_IPV4 && LWIP_IPV6 */
@@ -1619,13 +1632,17 @@ dns_gethostbyname_addrtype(const char *hostname, ip_addr_t *addr, dns_found_call
   {
     /* prevent calling found callback if no server is set, return error instead */
     if (ip_addr_isany_val(dns_servers[0])) {
-      return ERR_VAL;
+      err = ERR_VAL;
+      goto out;
     }
   }
 
   /* queue query with specified callback */
-  return dns_enqueue(hostname, hostnamelen, found, callback_arg LWIP_DNS_ADDRTYPE_ARG(dns_addrtype)
-                     LWIP_DNS_ISMDNS_ARG(is_mdns));
+  err = dns_enqueue(hostname, hostnamelen, found, callback_arg LWIP_DNS_ADDRTYPE_ARG(dns_addrtype)
+                    LWIP_DNS_ISMDNS_ARG(is_mdns));
+out:
+  SYS_ARCH_UNLOCK(&dns_mutex);
+  return err;
 }
 
 #endif /* LWIP_DNS */

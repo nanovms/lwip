@@ -132,6 +132,7 @@ const ip_addr_t dhcp6_All_DHCP6_Servers = IPADDR6_INIT_HOST(0xFF020000, 0, 0, 0x
 static struct udp_pcb *dhcp6_pcb;
 static u8_t dhcp6_pcb_refcount;
 
+static sys_lock_t dhcp6_mutex;
 
 /* receive, unfold, parse and free incoming messages */
 static void dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port);
@@ -209,10 +210,12 @@ void dhcp6_cleanup(struct netif *netif)
 {
   LWIP_ASSERT("netif != NULL", netif != NULL);
 
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   if (netif_dhcp6_data(netif) != NULL) {
     mem_free(netif_dhcp6_data(netif));
     netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP6, NULL);
   }
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
 }
 
 static struct dhcp6*
@@ -814,23 +817,30 @@ err_t
 dhcp6_enable_stateful(struct netif *netif)
 {
 #if LWIP_IPV6_DHCP6_STATEFUL
+  err_t err;
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   struct dhcp6 *dhcp6 = dhcp6_get_struct(netif, "dhcp6_enable_stateful");
   LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE,
     ("dhcp6_enable_stateful(%c%c%"U16_F")\n", netif->name[0], netif->name[1], (u16_t)netif->num));
   if (dhcp6 == NULL) {
-    return ERR_MEM;
+    err = ERR_MEM;
+    goto out;
   }
   if (dhcp6_stateful_enabled(dhcp6)) {
     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE,
       ("dhcp6_enable_stateful: stateful DHCPv6 already enabled\n"));
-    return ERR_OK;
+    err = ERR_OK;
+    goto out;
   } else if (dhcp6->state != DHCP6_STATE_OFF) {
     /* stateless running */
     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE,
       ("dhcp6_enable_stateful: switching from stateless to stateful DHCPv6\n"));
   }
   dhcp6_stateful_init(netif, dhcp6);
-  return ERR_OK;
+  err = ERR_OK;
+out:
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
+  return err;
 #else
   LWIP_UNUSED_ARG(netif);
   LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE, ("stateful DHCPv6 not enabled\n"));
@@ -851,16 +861,20 @@ err_t
 dhcp6_enable_stateless(struct netif *netif)
 {
   struct dhcp6 *dhcp6;
+  err_t err;
 
   LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp6_enable_stateless(netif=%p) %c%c%"U16_F"\n", (void *)netif, netif->name[0], netif->name[1], (u16_t)netif->num));
 
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   dhcp6 = dhcp6_get_struct(netif, "dhcp6_enable_stateless()");
   if (dhcp6 == NULL) {
-    return ERR_MEM;
+    err = ERR_MEM;
+    goto out;
   }
   if (dhcp6_stateless_enabled(dhcp6)) {
     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp6_enable_stateless(): stateless DHCPv6 already enabled"));
-    return ERR_OK;
+    err = ERR_OK;
+    goto out;
   } else if (dhcp6->state != DHCP6_STATE_OFF) {
     /* stateful running */
     /* @todo: stop stateful once it is implemented */
@@ -868,7 +882,10 @@ dhcp6_enable_stateless(struct netif *netif)
   }
   LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp6_enable_stateless(): stateless DHCPv6 enabled\n"));
   dhcp6_set_state(dhcp6, DHCP6_STATE_STATELESS_IDLE, "dhcp6_enable_stateless");
-  return ERR_OK;
+  err = ERR_OK;
+out:
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
+  return err;
 }
 
 /**
@@ -884,6 +901,7 @@ dhcp6_disable(struct netif *netif)
 
   LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp6_disable(netif=%p) %c%c%"U16_F"\n", (void *)netif, netif->name[0], netif->name[1], (u16_t)netif->num));
 
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   dhcp6 = netif_dhcp6_data(netif);
   if (dhcp6 != NULL) {
     if (dhcp6->state != DHCP6_STATE_OFF) {
@@ -896,6 +914,7 @@ dhcp6_disable(struct netif *netif)
       }
     }
   }
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
 }
 
 #if LWIP_IPV6_DHCP6_STATELESS
@@ -1036,6 +1055,7 @@ dhcp6_nd6_ra_trigger(struct netif *netif, u8_t managed_addr_config, u8_t other_c
   struct dhcp6 *dhcp6;
 
   LWIP_ASSERT("netif != NULL", netif != NULL);
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   dhcp6 = netif_dhcp6_data(netif);
 
   LWIP_UNUSED_ARG(managed_addr_config);
@@ -1053,6 +1073,7 @@ dhcp6_nd6_ra_trigger(struct netif *netif, u8_t managed_addr_config, u8_t other_c
     }
   }
 #endif /* LWIP_IPV6_DHCP6_STATELESS */
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
 }
 
 /**
@@ -1160,6 +1181,7 @@ static void
 dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_data, u16_t port)
 {
   struct netif *netif = ip_data->current_input_netif;
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   struct dhcp6 *dhcp6 = netif_dhcp6_data(netif);
   const ip_addr_t *addr = &ip_data->current_iphdr_src;
   struct dhcp6_msg *reply_msg = (struct dhcp6_msg *)p->payload;
@@ -1237,6 +1259,7 @@ dhcp6_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip
   }
 
 free_pbuf_and_return:
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
   pbuf_free(p);
 }
 
@@ -1291,6 +1314,46 @@ dhcp6_timeout(struct netif *netif, struct dhcp6 *dhcp6)
 #endif
 }
 
+static u8_t
+dhcp6_tmr_netif(struct netif *netif, void *priv)
+{
+  struct dhcp6 *dhcp6 = netif_dhcp6_data(netif);
+  /* only act on DHCPv6 configured interfaces */
+  if (dhcp6 != NULL) {
+#if LWIP_IPV6_DHCP6_STATEFUL
+    if (dhcp6->elapsed_time != 0xFFFF) {
+      dhcp6->elapsed_time++;
+    }
+    if ((dhcp6->state >= DHCP6_STATE_STATEFUL_IDLE) &&
+        (dhcp6->state <= DHCP6_STATE_REBIND)) {
+      if (ip6_addr_isinvalid(netif_ip6_addr_state(netif, dhcp6->addr_idx))) {
+        LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE,
+          ("dhcp6_tmr: IP address invalidated, restarting\n"));
+        dhcp6_stateful_init(netif, dhcp6);
+      } else {
+        if ((dhcp6->t2 > 0) && (dhcp6->t2 != IP6_ADDR_LIFE_INFINITE)) {
+          dhcp6->t2--;
+        }
+        if ((dhcp6->t1 > 0) && (dhcp6->t1 != IP6_ADDR_LIFE_INFINITE) && (--dhcp6->t1 == 0)) {
+          dhcp6_renew(netif, dhcp6);
+        }
+      }
+    }
+#endif
+    /* timer is active (non zero), and is about to trigger now */
+    if (dhcp6->request_timeout > 1) {
+      dhcp6->request_timeout--;
+    } else if (dhcp6->request_timeout == 1) {
+      dhcp6->request_timeout--;
+      /* { dhcp6->request_timeout == 0 } */
+      LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp6_tmr(): request timeout\n"));
+      /* this client's request timeout triggered */
+      dhcp6_timeout(netif, dhcp6);
+    }
+  }
+  return false;
+}
+
 /**
  * DHCPv6 timeout handling (this function must be called every 500ms,
  * see @ref DHCP6_TIMER_MSECS).
@@ -1301,44 +1364,10 @@ dhcp6_timeout(struct netif *netif, struct dhcp6 *dhcp6)
 void
 dhcp6_tmr(void)
 {
-  struct netif *netif;
+  SYS_ARCH_LOCK(&dhcp6_mutex);
   /* loop through netif's */
-  NETIF_FOREACH(netif) {
-    struct dhcp6 *dhcp6 = netif_dhcp6_data(netif);
-    /* only act on DHCPv6 configured interfaces */
-    if (dhcp6 != NULL) {
-#if LWIP_IPV6_DHCP6_STATEFUL
-      if (dhcp6->elapsed_time != 0xFFFF) {
-        dhcp6->elapsed_time++;
-      }
-      if ((dhcp6->state >= DHCP6_STATE_STATEFUL_IDLE) &&
-          (dhcp6->state <= DHCP6_STATE_REBIND)) {
-        if (ip6_addr_isinvalid(netif_ip6_addr_state(netif, dhcp6->addr_idx))) {
-          LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE,
-            ("dhcp6_tmr: IP address invalidated, restarting\n"));
-          dhcp6_stateful_init(netif, dhcp6);
-        } else {
-          if ((dhcp6->t2 > 0) && (dhcp6->t2 != IP6_ADDR_LIFE_INFINITE)) {
-            dhcp6->t2--;
-          }
-          if ((dhcp6->t1 > 0) && (dhcp6->t1 != IP6_ADDR_LIFE_INFINITE) && (--dhcp6->t1 == 0)) {
-            dhcp6_renew(netif, dhcp6);
-          }
-        }
-      }
-#endif
-      /* timer is active (non zero), and is about to trigger now */
-      if (dhcp6->request_timeout > 1) {
-        dhcp6->request_timeout--;
-      } else if (dhcp6->request_timeout == 1) {
-        dhcp6->request_timeout--;
-        /* { dhcp6->request_timeout == 0 } */
-        LWIP_DEBUGF(DHCP6_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp6_tmr(): request timeout\n"));
-        /* this client's request timeout triggered */
-        dhcp6_timeout(netif, dhcp6);
-      }
-    }
-  }
+  netif_iterate(dhcp6_tmr_netif, NULL);
+  SYS_ARCH_UNLOCK(&dhcp6_mutex);
 }
 
 #endif /* LWIP_IPV6 && LWIP_IPV6_DHCP6 */

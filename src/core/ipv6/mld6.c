@@ -86,6 +86,13 @@ static err_t mld6_remove_group(struct netif *netif, struct mld_group *group);
 static void mld6_delayed_report(struct mld_group *group, u16_t maxresp);
 static void mld6_send(struct netif *netif, struct mld_group *group, u8_t type);
 
+struct mld6_netif_group_priv {
+  const ip6_addr_t *srcaddr;
+  const ip6_addr_t *groupaddr;
+  err_t err;
+};
+
+static sys_lock_t mld6_mutex;
 
 /**
  * Stop MLD processing on interface
@@ -95,8 +102,10 @@ static void mld6_send(struct netif *netif, struct mld_group *group, u8_t type);
 err_t
 mld6_stop(struct netif *netif)
 {
-  struct mld_group *group = netif_mld6_data(netif);
+  struct mld_group *group;
 
+  SYS_ARCH_LOCK(&mld6_mutex);
+  group = netif_mld6_data(netif);
   netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_MLD6, NULL);
 
   while (group != NULL) {
@@ -113,6 +122,7 @@ mld6_stop(struct netif *netif)
     /* move to "next" */
     group = next;
   }
+  SYS_ARCH_UNLOCK(&mld6_mutex);
   return ERR_OK;
 }
 
@@ -124,12 +134,30 @@ mld6_stop(struct netif *netif)
 void
 mld6_report_groups(struct netif *netif)
 {
-  struct mld_group *group = netif_mld6_data(netif);
+  struct mld_group *group;
 
+  SYS_ARCH_LOCK(&mld6_mutex);
+  group = netif_mld6_data(netif);
   while (group != NULL) {
     mld6_delayed_report(group, MLD6_JOIN_DELAYING_MEMBER_TMR_MS);
     group = group->next;
   }
+  SYS_ARCH_UNLOCK(&mld6_mutex);
+}
+
+static struct mld_group *
+mld6_lookfor_group_locked(struct netif *ifp, const ip6_addr_t *addr)
+{
+  struct mld_group *group = netif_mld6_data(ifp);
+
+  while (group != NULL) {
+    if (ip6_addr_cmp(&(group->group_address), addr)) {
+      return group;
+    }
+    group = group->next;
+  }
+
+  return NULL;
 }
 
 /**
@@ -143,16 +171,13 @@ mld6_report_groups(struct netif *netif)
 struct mld_group *
 mld6_lookfor_group(struct netif *ifp, const ip6_addr_t *addr)
 {
-  struct mld_group *group = netif_mld6_data(ifp);
+  struct mld_group *group;
 
-  while (group != NULL) {
-    if (ip6_addr_cmp(&(group->group_address), addr)) {
-      return group;
-    }
-    group = group->next;
-  }
+  SYS_ARCH_LOCK(&mld6_mutex);
+  group = mld6_lookfor_group_locked(ifp, addr);
+  SYS_ARCH_UNLOCK(&mld6_mutex);
 
-  return NULL;
+  return group;
 }
 
 
@@ -245,6 +270,7 @@ mld6_input(struct pbuf *p, struct ip_globals *ip_data)
 
   switch (mld_hdr->type) {
   case ICMP6_TYPE_MLQ: /* Multicast listener query. */
+    SYS_ARCH_LOCK(&mld6_mutex);
     /* Is it a general query? */
     if (ip6_addr_isallnodes_linklocal(ip6_current_dest_addr(ip_data)) &&
         ip6_addr_isany(&(mld_hdr->multicast_address))) {
@@ -263,19 +289,21 @@ mld6_input(struct pbuf *p, struct ip_globals *ip_data)
        * We use IP6 destination address to have a memory aligned copy.
        * mld_hdr->multicast_address should be the same. */
       MLD6_STATS_INC(mld6.rx_group);
-      group = mld6_lookfor_group(inp, ip6_current_dest_addr(ip_data));
+      group = mld6_lookfor_group_locked(inp, ip6_current_dest_addr(ip_data));
       if (group != NULL) {
         /* Schedule a report. */
         mld6_delayed_report(group, mld_hdr->max_resp_delay);
       }
     }
+    SYS_ARCH_UNLOCK(&mld6_mutex);
     break; /* ICMP6_TYPE_MLQ */
   case ICMP6_TYPE_MLR: /* Multicast listener report. */
     /* Have we joined this group?
      * We use IP6 destination address to have a memory aligned copy.
      * mld_hdr->multicast_address should be the same. */
     MLD6_STATS_INC(mld6.rx_report);
-    group = mld6_lookfor_group(inp, ip6_current_dest_addr(ip_data));
+    SYS_ARCH_LOCK(&mld6_mutex);
+    group = mld6_lookfor_group_locked(inp, ip6_current_dest_addr(ip_data));
     if (group != NULL) {
       /* If we are waiting to report, cancel it. */
       if (group->group_state == MLD6_GROUP_DELAYING_MEMBER) {
@@ -284,6 +312,7 @@ mld6_input(struct pbuf *p, struct ip_globals *ip_data)
         group->last_reporter_flag = 0;
       }
     }
+    SYS_ARCH_UNLOCK(&mld6_mutex);
     break; /* ICMP6_TYPE_MLR */
   case ICMP6_TYPE_MLD: /* Multicast listener done. */
     /* Do nothing, router will query us. */
@@ -295,6 +324,39 @@ mld6_input(struct pbuf *p, struct ip_globals *ip_data)
   }
 
   pbuf_free(p);
+}
+
+static u8_t
+mld6_netif_joingroup(struct netif *n, void *priv)
+{
+  struct mld6_netif_group_priv *data = priv;
+  const ip6_addr_t *srcaddr = data->srcaddr;
+
+  /* Should we join this interface ? */
+  if (ip6_addr_isany(srcaddr) || netif_get_ip6_addr_match(n, srcaddr) >= 0) {
+    data->err = mld6_joingroup_netif(n, data->groupaddr);
+    if (data->err != ERR_OK) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static u8_t
+mld6_netif_leavegroup(struct netif *n, void *priv)
+{
+  struct mld6_netif_group_priv *data = priv;
+  const ip6_addr_t *srcaddr = data->srcaddr;
+
+  /* Should we leave this interface ? */
+  if (ip6_addr_isany(srcaddr) || netif_get_ip6_addr_match(n, srcaddr) >= 0) {
+    err_t res = mld6_leavegroup_netif(n, data->groupaddr);
+    if (data->err != ERR_OK) {
+      /* Store this result if we have not yet gotten a success */
+      data->err = res;
+    }
+  }
+  return false;
 }
 
 /**
@@ -315,24 +377,18 @@ mld6_input(struct pbuf *p, struct ip_globals *ip_data)
 err_t
 mld6_joingroup(const ip6_addr_t *srcaddr, const ip6_addr_t *groupaddr)
 {
-  err_t         err = ERR_VAL; /* no matching interface */
-  struct netif *netif;
+  struct mld6_netif_group_priv priv = {
+    .srcaddr = srcaddr,
+    .groupaddr = groupaddr,
+    .err = ERR_VAL, /* no matching interface */
+  };
 
   LWIP_ASSERT_CORE_LOCKED();
 
   /* loop through netif's */
-  NETIF_FOREACH(netif) {
-    /* Should we join this interface ? */
-    if (ip6_addr_isany(srcaddr) ||
-        netif_get_ip6_addr_match(netif, srcaddr) >= 0) {
-      err = mld6_joingroup_netif(netif, groupaddr);
-      if (err != ERR_OK) {
-        return err;
-      }
-    }
-  }
+  netif_iterate(mld6_netif_joingroup, &priv);
 
-  return err;
+  return priv.err;
 }
 
 /**
@@ -362,14 +418,16 @@ mld6_joingroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
 #endif /* LWIP_IPV6_SCOPES */
 
   LWIP_ASSERT_CORE_LOCKED();
+  SYS_ARCH_LOCK(&mld6_mutex);
 
   /* find group or create a new one if not found */
-  group = mld6_lookfor_group(netif, groupaddr);
+  group = mld6_lookfor_group_locked(netif, groupaddr);
 
   if (group == NULL) {
     /* Joining a new group. Create a new group entry. */
     group = mld6_new_group(netif, groupaddr);
     if (group == NULL) {
+      SYS_ARCH_UNLOCK(&mld6_mutex);
       return ERR_MEM;
     }
 
@@ -386,6 +444,7 @@ mld6_joingroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
 
   /* Increment group use */
   group->use++;
+  SYS_ARCH_UNLOCK(&mld6_mutex);
   return ERR_OK;
 }
 
@@ -404,25 +463,18 @@ mld6_joingroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
 err_t
 mld6_leavegroup(const ip6_addr_t *srcaddr, const ip6_addr_t *groupaddr)
 {
-  err_t         err = ERR_VAL; /* no matching interface */
-  struct netif *netif;
+  struct mld6_netif_group_priv priv = {
+    .srcaddr = srcaddr,
+    .groupaddr = groupaddr,
+    .err = ERR_VAL, /* no matching interface */
+  };
 
   LWIP_ASSERT_CORE_LOCKED();
 
   /* loop through netif's */
-  NETIF_FOREACH(netif) {
-    /* Should we leave this interface ? */
-    if (ip6_addr_isany(srcaddr) ||
-        netif_get_ip6_addr_match(netif, srcaddr) >= 0) {
-      err_t res = mld6_leavegroup_netif(netif, groupaddr);
-      if (err != ERR_OK) {
-        /* Store this result if we have not yet gotten a success */
-        err = res;
-      }
-    }
-  }
+  netif_iterate(mld6_netif_leavegroup, &priv);
 
-  return err;
+  return priv.err;
 }
 
 /**
@@ -450,9 +502,10 @@ mld6_leavegroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
 #endif /* LWIP_IPV6_SCOPES */
 
   LWIP_ASSERT_CORE_LOCKED();
+  SYS_ARCH_LOCK(&mld6_mutex);
 
   /* find group */
-  group = mld6_lookfor_group(netif, groupaddr);
+  group = mld6_lookfor_group_locked(netif, groupaddr);
 
   if (group != NULL) {
     /* Leave if there is no other use of the group */
@@ -479,13 +532,35 @@ mld6_leavegroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
     }
 
     /* Left group */
+    SYS_ARCH_UNLOCK(&mld6_mutex);
     return ERR_OK;
   }
+  SYS_ARCH_UNLOCK(&mld6_mutex);
 
   /* Group not found */
   return ERR_VAL;
 }
 
+static u8_t mld6_tmr_netif(struct netif *netif, void *priv)
+{
+  struct mld_group *group = netif_mld6_data(netif);
+
+  while (group != NULL) {
+    if (group->timer > 0) {
+      group->timer--;
+      if (group->timer == 0) {
+        /* If the state is MLD6_GROUP_DELAYING_MEMBER then we send a report for this group */
+        if (group->group_state == MLD6_GROUP_DELAYING_MEMBER) {
+          MLD6_STATS_INC(mld6.tx_report);
+          mld6_send(netif, group, ICMP6_TYPE_MLR);
+          group->group_state = MLD6_GROUP_IDLE_MEMBER;
+        }
+      }
+    }
+    group = group->next;
+  }
+  return false;
+}
 
 /**
  * Periodic timer for mld processing. Must be called every
@@ -496,26 +571,9 @@ mld6_leavegroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
 void
 mld6_tmr(void)
 {
-  struct netif *netif;
-
-  NETIF_FOREACH(netif) {
-    struct mld_group *group = netif_mld6_data(netif);
-
-    while (group != NULL) {
-      if (group->timer > 0) {
-        group->timer--;
-        if (group->timer == 0) {
-          /* If the state is MLD6_GROUP_DELAYING_MEMBER then we send a report for this group */
-          if (group->group_state == MLD6_GROUP_DELAYING_MEMBER) {
-            MLD6_STATS_INC(mld6.tx_report);
-            mld6_send(netif, group, ICMP6_TYPE_MLR);
-            group->group_state = MLD6_GROUP_IDLE_MEMBER;
-          }
-        }
-      }
-      group = group->next;
-    }
-  }
+  SYS_ARCH_LOCK(&mld6_mutex);
+  netif_iterate(mld6_tmr_netif, NULL);
+  SYS_ARCH_UNLOCK(&mld6_mutex);
 }
 
 /**

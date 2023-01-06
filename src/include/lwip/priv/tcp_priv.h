@@ -78,6 +78,7 @@ void             tcp_input   (struct pbuf *p, struct ip_globals *ip_data);
 /* Used within the TCP code only: */
 struct tcp_pcb * tcp_alloc   (u8_t prio);
 void             tcp_free    (struct tcp_pcb *pcb);
+void             tcp_free_listen(struct tcp_pcb *pcb);
 void             tcp_abandon (struct tcp_pcb *pcb, int reset);
 err_t            tcp_send_empty_ack(struct tcp_pcb *pcb);
 err_t            tcp_rexmit  (struct tcp_pcb *pcb);
@@ -328,7 +329,6 @@ struct tcp_seg {
 
 /* Global variables: */
 extern u32_t tcp_ticks;
-extern u8_t tcp_active_pcbs_changed;
 extern u8_t tcp_syncookie_secret[TCP_SYNCOOKIE_SECRET_SIZE];
 
 /* The TCP PCB lists. */
@@ -346,6 +346,8 @@ extern struct tcp_pcb *tcp_tw_pcbs;      /* List of all TCP PCBs in TIME-WAIT. *
 #define NUM_TCP_PCB_LISTS_NO_TIME_WAIT  3
 #define NUM_TCP_PCB_LISTS               4
 extern struct tcp_pcb ** const tcp_pcb_lists[NUM_TCP_PCB_LISTS];
+
+extern sys_lock_t tcp_mutex;
 
 /* Axioms about the above lists:
    1) Every TCP PCB that is not CLOSED is in one of the lists.
@@ -424,21 +426,20 @@ extern struct tcp_pcb ** const tcp_pcb_lists[NUM_TCP_PCB_LISTS];
 #define TCP_REG_ACTIVE(npcb)                       \
   do {                                             \
     TCP_REG(&tcp_active_pcbs, npcb);               \
-    tcp_active_pcbs_changed = 1;                   \
   } while (0)
 
 #define TCP_RMV_ACTIVE(npcb)                       \
   do {                                             \
     TCP_RMV(&tcp_active_pcbs, npcb);               \
-    tcp_active_pcbs_changed = 1;                   \
   } while (0)
 
 #define TCP_PCB_REMOVE_ACTIVE(pcb)                 \
   do {                                             \
     tcp_pcb_remove(&tcp_active_pcbs, pcb);         \
-    tcp_active_pcbs_changed = 1;                   \
   } while (0)
 
+#define tcp_lpcb_ref(pcb)   tcp_ref((struct tcp_pcb *)pcb)
+#define tcp_lpcb_unref(pcb) tcp_free_listen((struct tcp_pcb *)pcb)
 
 /* Internal functions: */
 struct tcp_pcb *tcp_pcb_copy(struct tcp_pcb *pcb);
@@ -484,8 +485,12 @@ err_t tcp_zero_window_probe(struct tcp_pcb *pcb);
 #if TCP_CALCULATE_EFF_SEND_MSS
 u16_t tcp_eff_send_mss_netif(u16_t sendmss, struct netif *outif,
                              const ip_addr_t *dest);
-#define tcp_eff_send_mss(sendmss, src, dest) \
-    tcp_eff_send_mss_netif(sendmss, ip_route(src, dest), dest)
+#define tcp_eff_send_mss(sendmss, src, dest) ({             \
+    struct netif *n = ip_route(src, dest);                  \
+    u16_t mss = tcp_eff_send_mss_netif(sendmss, n, dest);   \
+    if (n) netif_unref(n);                                  \
+    mss;                                                    \
+})
 #endif /* TCP_CALCULATE_EFF_SEND_MSS */
 
 #if LWIP_CALLBACK_API

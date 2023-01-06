@@ -1288,6 +1288,7 @@ tcp_output(struct tcp_pcb *pcb)
   if (ip_addr_isany(&pcb->local_ip)) {
     const ip_addr_t *local_ip = ip_netif_get_local_ip(netif, &pcb->remote_ip);
     if (local_ip == NULL) {
+      netif_unref(netif);
       return ERR_RTE;
     }
     ip_addr_copy(pcb->local_ip, *local_ip);
@@ -1295,6 +1296,8 @@ tcp_output(struct tcp_pcb *pcb)
 
   /* Handle the current segment not fitting within the window */
   if (lwip_ntohl(seg->tcphdr->seqno) - pcb->lastack + seg->len > wnd) {
+    netif_unref(netif);
+
     /* We need to start the persistent timer when the next unsent segment does not fit
      * within the remaining (could be 0) send window and RTO timer is not running (we
      * have no in-flight data). If window is still too small after persist timer fires,
@@ -1353,6 +1356,7 @@ tcp_output(struct tcp_pcb *pcb)
     if (err != ERR_OK) {
       /* segment could not be sent, for whatever reason */
       tcp_set_flags(pcb, TF_NAGLEMEMERR);
+      netif_unref(netif);
       return err;
     }
 #if TCP_OVERSIZE_DBGCHECK
@@ -1399,6 +1403,7 @@ tcp_output(struct tcp_pcb *pcb)
     }
     seg = pcb->unsent;
   }
+  netif_unref(netif);
 #if TCP_OVERSIZE
   if (pcb->unsent == NULL) {
     /* last unsent has been removed, reset unsent_oversize */
@@ -1942,6 +1947,7 @@ tcp_output_control_segment(const struct tcp_pcb *pcb, struct pbuf *p,
     TCP_STATS_INC(tcp.xmit);
     err = ip_output_if(p, src, dst, ttl, tos, IP_PROTO_TCP, netif);
     NETIF_RESET_HINTS(netif);
+    netif_unref(netif);
   }
   pbuf_free(p);
   return err;
@@ -2039,6 +2045,7 @@ tcp_synack(const struct tcp_pcb_listen *pcb, u32_t seqno, u32_t ackno,
   if (netif == NULL)
     return;
   mss = tcp_eff_send_mss_netif(TCP_MSS, netif, remote_ip);
+  netif_unref(netif);
 #else /* TCP_CALCULATE_EFF_SEND_MSS */
   LWIP_UNUSED_ARG(netif);
   mss = TCP_MSS;

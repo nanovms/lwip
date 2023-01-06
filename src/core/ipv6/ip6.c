@@ -64,6 +64,130 @@
 #include LWIP_HOOK_FILENAME
 #endif
 
+struct ip6_route_netif_priv {
+  const ip6_addr_t *addr;
+  struct netif *n;
+};
+
+struct ip6_input_netif_priv {
+  struct ip_globals *ip_data;
+  struct netif *n;
+};
+
+#if !LWIP_SINGLE_NETIF
+
+static u8_t
+ip6_route_netif_single(struct netif *n, void *priv)
+{
+  struct ip6_route_netif_priv *data = priv;
+
+  if (data->n == NULL) {
+    data->n = n;
+    netif_ref(n);
+    return false;
+  } else {
+    netif_unref(data->n);
+    data->n = NULL;
+    return true;
+  }
+}
+
+#if LWIP_IPV6_SCOPES
+
+static u8_t
+ip6_route_netif_zone(struct netif *n, void *priv)
+{
+  struct ip6_route_netif_priv *data = priv;
+
+  if (ip6_addr_test_zone(data->addr, n) &&
+      netif_is_up(n) && netif_is_link_up(n)) {
+    data->n = n;
+    netif_ref(n);
+    return true;
+  }
+  return false;
+}
+
+#endif
+
+static u8_t
+ip6_route_netif_addr_zoneless(struct netif *n, void *priv)
+{
+  struct ip6_route_netif_priv *data = priv;
+
+  if (!netif_is_up(n) || !netif_is_link_up(n)) {
+    return false;
+  }
+  for (s8_t i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
+    if (ip6_addr_isvalid(netif_ip6_addr_state(n, i)) &&
+        ip6_addr_cmp_zoneless(data->addr, netif_ip6_addr(n, i))) {
+      data->n = n;
+      netif_ref(n);
+      return true;
+    }
+  }
+  return false;
+}
+
+static u8_t
+ip6_route_netif_addr(struct netif *n, void *priv)
+{
+  struct ip6_route_netif_priv *data = priv;
+
+  if (!netif_is_up(n) || !netif_is_link_up(n)) {
+    return false;
+  }
+  for (s8_t i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
+    if (ip6_addr_isvalid(netif_ip6_addr_state(n, i)) &&
+        ip6_addr_cmp(data->addr, netif_ip6_addr(n, i))) {
+      data->n = n;
+      netif_ref(n);
+      return true;
+    }
+  }
+  return false;
+}
+
+static u8_t
+ip6_route_netif_subnet(struct netif *n, void *priv)
+{
+  struct ip6_route_netif_priv *data = priv;
+  const ip6_addr_t *dest = data->addr;
+
+  if (!netif_is_up(n) || !netif_is_link_up(n)) {
+    return false;
+  }
+  for (s8_t i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
+    if (ip6_addr_isvalid(netif_ip6_addr_state(n, i)) &&
+        ip6_addr_netcmp(dest, netif_ip6_addr(n, i)) &&
+        (netif_ip6_addr_isstatic(n, i) ||
+        ip6_addr_nethostcmp(dest, netif_ip6_addr(n, i)))) {
+      data->n = n;
+      netif_ref(n);
+      return true;
+    }
+  }
+  return false;
+}
+
+#if LWIP_NETIF_LOOPBACK && !LWIP_HAVE_LOOPIF
+
+static u8_t
+ip6_route_netif_any(struct netif *n, void *priv)
+{
+  if (netif_is_up(n)) {
+    struct ip6_route_netif_priv *data = priv;
+
+    data->n = n;
+    netif_ref(n);
+    return true;
+  }
+  return false;
+}
+
+#endif /* LWIP_NETIF_LOOPBACK && !LWIP_HAVE_LOOPIF */
+#endif /* !LWIP_SINGLE_NETIF */
+
 /**
  * Finds the appropriate network interface for a given IPv6 address. It tries to select
  * a netif following a sequence of heuristics:
@@ -89,18 +213,22 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
   LWIP_UNUSED_ARG(src);
   LWIP_UNUSED_ARG(dest);
 #else /* LWIP_SINGLE_NETIF */
+  struct ip6_route_netif_priv priv;
   struct netif *netif;
-  s8_t i;
 
   LWIP_ASSERT_CORE_LOCKED();
 
   /* If single netif configuration, fast return. */
-  if ((netif_list != NULL) && (netif_list->next == NULL)) {
-    if (!netif_is_up(netif_list) || !netif_is_link_up(netif_list) ||
-        (ip6_addr_has_zone(dest) && !ip6_addr_test_zone(dest, netif_list))) {
+  priv.n = NULL;
+  netif_iterate(ip6_route_netif_single, &priv);
+  netif = priv.n;
+  if (netif != NULL) {
+    if (!netif_is_up(netif) || !netif_is_link_up(netif) ||
+        (ip6_addr_has_zone(dest) && !ip6_addr_test_zone(dest, netif))) {
+      netif_unref(netif);
       return NULL;
     }
-    return netif_list;
+    return netif;
   }
 
 #if LWIP_IPV6_SCOPES
@@ -113,11 +241,11 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
     IP6_ADDR_ZONECHECK(dest);
     /* Find a netif based on the zone. For custom mappings, one zone may map
      * to multiple netifs, so find one that can actually send a packet. */
-    NETIF_FOREACH(netif) {
-      if (ip6_addr_test_zone(dest, netif) &&
-          netif_is_up(netif) && netif_is_link_up(netif)) {
-        return netif;
-      }
+    priv.addr = dest;
+    priv.n = NULL;
+    netif_iterate(ip6_route_netif_zone, &priv);
+    if (priv.n != NULL) {
+      return priv.n;
     }
     /* No matching netif found. Do no try to route to a different netif,
      * as that would be a zone violation, resulting in any packets sent to
@@ -150,26 +278,21 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
 #if LWIP_IPV6_SCOPES
     if (ip6_addr_has_zone(src)) {
       /* Find a netif matching the source zone (relatively cheap). */
-      NETIF_FOREACH(netif) {
-        if (netif_is_up(netif) && netif_is_link_up(netif) &&
-            ip6_addr_test_zone(src, netif)) {
-          return netif;
-        }
+      priv.addr = src;
+      priv.n = NULL;
+      netif_iterate(ip6_route_netif_zone, &priv);
+      if (priv.n != NULL) {
+        return priv.n;
       }
     } else
 #endif /* LWIP_IPV6_SCOPES */
     {
       /* Find a netif matching the source address (relatively expensive). */
-      NETIF_FOREACH(netif) {
-        if (!netif_is_up(netif) || !netif_is_link_up(netif)) {
-          continue;
-        }
-        for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
-          if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i)) &&
-              ip6_addr_cmp_zoneless(src, netif_ip6_addr(netif, i))) {
-            return netif;
-          }
-        }
+      priv.addr = src;
+      priv.n = NULL;
+      netif_iterate(ip6_route_netif_addr_zoneless, &priv);
+      if (priv.n != NULL) {
+        return priv.n;
       }
     }
     /* Again, do not use any other netif in this case, as that could result in
@@ -193,18 +316,11 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
    * such, the destination address may still match a local address, and so we
    * still need to check for exact matches here. By (lwIP) policy, statically
    * configured addresses do always have an implied local /64 subnet. */
-  NETIF_FOREACH(netif) {
-    if (!netif_is_up(netif) || !netif_is_link_up(netif)) {
-      continue;
-    }
-    for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
-      if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i)) &&
-          ip6_addr_netcmp(dest, netif_ip6_addr(netif, i)) &&
-          (netif_ip6_addr_isstatic(netif, i) ||
-          ip6_addr_nethostcmp(dest, netif_ip6_addr(netif, i)))) {
-        return netif;
-      }
-    }
+  priv.addr = dest;
+  priv.n = NULL;
+  netif_iterate(ip6_route_netif_subnet, &priv);
+  if (priv.n != NULL) {
+    return priv.n;
   }
 
   /* Get the netif for a suitable router-announced route. */
@@ -216,16 +332,11 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
   /* Try with the netif that matches the source address. Given the earlier rule
    * for scoped source addresses, this applies to unscoped addresses only. */
   if (!ip6_addr_isany(src)) {
-    NETIF_FOREACH(netif) {
-      if (!netif_is_up(netif) || !netif_is_link_up(netif)) {
-        continue;
-      }
-      for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES; i++) {
-        if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i)) &&
-            ip6_addr_cmp(src, netif_ip6_addr(netif, i))) {
-          return netif;
-        }
-      }
+    priv.addr = src;
+    priv.n = NULL;
+    netif_iterate(ip6_route_netif_addr, &priv);
+    if (priv.n != NULL) {
+      return priv.n;
     }
   }
 
@@ -233,14 +344,18 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
   /* loopif is disabled, loopback traffic is passed through any netif */
   if (ip6_addr_isloopback(dest)) {
     /* don't check for link on loopback traffic */
-    if (netif_default != NULL && netif_is_up(netif_default)) {
-      return netif_default;
-    }
-    /* default netif is not up, just use any netif for loopback traffic */
-    NETIF_FOREACH(netif) {
+    netif = netif_get_default();
+    if (netif != NULL) {
       if (netif_is_up(netif)) {
         return netif;
+        netif_unref(netif);
       }
+    }
+    /* default netif is not up, just use any netif for loopback traffic */
+    priv.n = NULL;
+    netif_iterate(ip6_route_netif_any, &priv);
+    if (priv.n != NULL) {
+      return priv.n;
     }
     return NULL;
   }
@@ -248,10 +363,14 @@ ip6_route(const ip6_addr_t *src, const ip6_addr_t *dest)
 #endif /* !LWIP_SINGLE_NETIF */
 
   /* no matching netif found, use default netif, if up */
-  if ((netif_default == NULL) || !netif_is_up(netif_default) || !netif_is_link_up(netif_default)) {
-    return NULL;
+  netif = netif_get_default();
+  if (netif != NULL) {
+    if (netif_is_up(netif) && netif_is_link_up(netif)) {
+      return netif;
+    }
+    netif_unref(netif);
   }
-  return netif_default;
+  return NULL;
 }
 
 /**
@@ -409,7 +528,7 @@ ip6_forward(struct pbuf *p, struct ip6_hdr *iphdr, struct netif *inp)
     LWIP_DEBUGF(IP6_DEBUG, ("ip6_forward: not forwarding packet beyond its source address zone.\n"));
     IP6_STATS_INC(ip6.rterr);
     IP6_STATS_INC(ip6.drop);
-    return;
+    goto out;
   }
 #endif /* LWIP_IPV6_SCOPES */
   /* Do not forward packets onto the same network interface on which
@@ -418,7 +537,7 @@ ip6_forward(struct pbuf *p, struct ip6_hdr *iphdr, struct netif *inp)
     LWIP_DEBUGF(IP6_DEBUG, ("ip6_forward: not bouncing packets back on incoming interface.\n"));
     IP6_STATS_INC(ip6.rterr);
     IP6_STATS_INC(ip6.drop);
-    return;
+    goto out;
   }
 
   /* decrement HL */
@@ -432,7 +551,7 @@ ip6_forward(struct pbuf *p, struct ip6_hdr *iphdr, struct netif *inp)
     }
 #endif /* LWIP_ICMP6 */
     IP6_STATS_INC(ip6.drop);
-    return;
+    goto out;
   }
 
   if (netif->mtu && (p->tot_len > netif->mtu)) {
@@ -443,7 +562,7 @@ ip6_forward(struct pbuf *p, struct ip6_hdr *iphdr, struct netif *inp)
     }
 #endif /* LWIP_ICMP6 */
     IP6_STATS_INC(ip6.drop);
-    return;
+    goto out;
   }
 
   LWIP_DEBUGF(IP6_DEBUG, ("ip6_forward: forwarding packet to %"X16_F":%"X16_F":%"X16_F":%"X16_F":%"X16_F":%"X16_F":%"X16_F":%"X16_F"\n",
@@ -460,6 +579,8 @@ ip6_forward(struct pbuf *p, struct ip6_hdr *iphdr, struct netif *inp)
   netif->output_ip6(netif, p, ip6_current_dest_addr());
   IP6_STATS_INC(ip6.fw);
   IP6_STATS_INC(ip6.xmit);
+out:
+  netif_unref(netif);
   return;
 }
 #endif /* LWIP_IPV6_FORWARD */
@@ -490,6 +611,25 @@ ip6_input_accept(struct netif *netif, struct ip_globals *ip_data)
   }
   return 0;
 }
+
+#if !LWIP_SINGLE_NETIF
+static u8_t
+ip6_input_netif(struct netif *n, void *priv)
+{
+  struct ip6_input_netif_priv *data = priv;
+  struct ip_globals *ip_data = data->ip_data;
+  if (n == ip_data->current_input_netif) {
+    /* we checked that before already */
+    return false;
+  }
+  if (ip6_input_accept(n, ip_data)) {
+    data->n = n;
+    netif_ref(n);
+    return true;
+  }
+  return false;
+}
+#endif /* !LWIP_SINGLE_NETIF */
 
 /**
  * This function is called by the network interface device driver when
@@ -653,15 +793,12 @@ ip6_input(struct pbuf *p, struct netif *inp)
       }
 #endif /* !LWIP_NETIF_LOOPBACK || LWIP_HAVE_LOOPIF */
 #if !LWIP_SINGLE_NETIF
-      NETIF_FOREACH(netif) {
-        if (netif == inp) {
-          /* we checked that before already */
-          continue;
-        }
-        if (ip6_input_accept(netif, &ip_data)) {
-          break;
-        }
-      }
+      struct ip6_input_netif_priv priv = {
+        .ip_data = &ip_data,
+        .n = NULL,
+      };
+      netif_iterate(ip6_input_netif, &priv);
+      netif = priv.n;
 #endif /* !LWIP_SINGLE_NETIF */
     }
 netif_found:
@@ -677,7 +814,10 @@ netif_found:
     LWIP_DEBUGF(IP6_DEBUG, ("ip6_input: packet with src ANY_ADDRESS dropped\n"));
     pbuf_free(p);
     IP6_STATS_INC(ip6.drop);
-    goto ip6_input_cleanup;
+    if ((netif != NULL) && (netif != inp)) {
+      netif_unref(netif);
+    }
+    return ERR_OK;
   }
 
   /* packet not for us? */
@@ -692,7 +832,7 @@ netif_found:
     }
 #endif /* LWIP_IPV6_FORWARD */
     pbuf_free(p);
-    goto ip6_input_cleanup;
+    return ERR_OK;
   }
 
   /* current netif pointer. */
@@ -1109,6 +1249,8 @@ options_done:
   }
 
 ip6_input_cleanup:
+  if (netif != inp)
+    netif_unref(netif);
 
   return ERR_OK;
 }
@@ -1289,6 +1431,7 @@ ip6_output(struct pbuf *p, const ip6_addr_t *src, const ip6_addr_t *dest,
   struct netif *netif;
   struct ip6_hdr *ip6hdr;
   ip6_addr_t src_addr, dest_addr;
+  err_t err;
 
   LWIP_IP_CHECK_PBUF_REF_COUNT_FOR_TX(p);
 
@@ -1316,7 +1459,9 @@ ip6_output(struct pbuf *p, const ip6_addr_t *src, const ip6_addr_t *dest,
     return ERR_RTE;
   }
 
-  return ip6_output_if(p, src, dest, hl, tc, nexth, netif);
+  err = ip6_output_if(p, src, dest, hl, tc, nexth, netif);
+  netif_unref(netif);
+  return err;
 }
 
 
@@ -1379,6 +1524,7 @@ ip6_output_hinted(struct pbuf *p, const ip6_addr_t *src, const ip6_addr_t *dest,
   err = ip6_output_if(p, src, dest, hl, tc, nexth, netif);
   NETIF_RESET_HINTS(netif);
 
+  netif_unref(netif);
   return err;
 }
 #endif /* LWIP_NETIF_USE_HINTS*/

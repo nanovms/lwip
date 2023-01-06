@@ -211,6 +211,7 @@ typedef u16_t tcpflags_t;
  */
 #define TCP_PCB_COMMON(type) \
   type *next; /* for the linked list */ \
+  sys_lock_t lock; \
   void *callback_arg; \
   TCP_PCB_EXTARGS \
   enum tcp_state state; /* TCP state */ \
@@ -420,6 +421,13 @@ void             tcp_err     (struct tcp_pcb *pcb, tcp_err_fn err);
 void             tcp_accept  (struct tcp_pcb *pcb, tcp_accept_fn accept);
 #endif /* LWIP_CALLBACK_API */
 void             tcp_poll    (struct tcp_pcb *pcb, tcp_poll_fn poll, u8_t interval);
+
+void             tcp_ref     (struct tcp_pcb *pcb);
+void             tcp_unref   (struct tcp_pcb *pcb);
+
+#define          tcp_lock(pcb)      SYS_ARCH_LOCK(&(pcb)->lock)
+#define          tcp_unlock(pcb)    SYS_ARCH_UNLOCK(&(pcb)->lock)
+#define          tcp_trylock(pcb)   SYS_ARCH_TRYLOCK(&(pcb)->lock)
 
 #define          tcp_set_flags(pcb, set_flags)     do { (pcb)->flags = (tcpflags_t)((pcb)->flags |  (set_flags)); } while(0)
 #define          tcp_clear_flags(pcb, clr_flags)   do { (pcb)->flags = (tcpflags_t)((pcb)->flags & (tcpflags_t)(~(clr_flags) & TCP_ALLFLAGS)); } while(0)

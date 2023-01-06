@@ -103,6 +103,7 @@ struct etharp_entry {
 };
 
 static struct etharp_entry arp_table[ARP_TABLE_SIZE];
+static sys_lock_t arp_mutex;
 
 #if !LWIP_NETIF_HWADDRHINT
 static netif_addr_idx_t etharp_cached_entry;
@@ -200,6 +201,7 @@ etharp_tmr(void)
 
   LWIP_DEBUGF(ETHARP_DEBUG, ("etharp_timer\n"));
   /* remove expired entries from the ARP table */
+  SYS_ARCH_LOCK(&arp_mutex);
   for (i = 0; i < ARP_TABLE_SIZE; ++i) {
     u8_t state = arp_table[i].state;
     if (state != ETHARP_STATE_EMPTY
@@ -229,6 +231,7 @@ etharp_tmr(void)
       }
     }
   }
+  SYS_ARCH_UNLOCK(&arp_mutex);
 }
 
 /**
@@ -503,6 +506,7 @@ err_t
 etharp_add_static_entry(const ip4_addr_t *ipaddr, struct eth_addr *ethaddr)
 {
   struct netif *netif;
+  err_t err;
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_add_static_entry: %"U16_F".%"U16_F".%"U16_F".%"U16_F" - %02"X16_F":%02"X16_F":%02"X16_F":%02"X16_F":%02"X16_F":%02"X16_F"\n",
               ip4_addr1_16(ipaddr), ip4_addr2_16(ipaddr), ip4_addr3_16(ipaddr), ip4_addr4_16(ipaddr),
@@ -514,7 +518,11 @@ etharp_add_static_entry(const ip4_addr_t *ipaddr, struct eth_addr *ethaddr)
     return ERR_RTE;
   }
 
-  return etharp_update_arp_entry(netif, ipaddr, ethaddr, ETHARP_FLAG_TRY_HARD | ETHARP_FLAG_STATIC_ENTRY);
+  SYS_ARCH_LOCK(&arp_mutex);
+  err = etharp_update_arp_entry(netif, ipaddr, ethaddr, ETHARP_FLAG_TRY_HARD | ETHARP_FLAG_STATIC_ENTRY);
+  SYS_ARCH_UNLOCK(&arp_mutex);
+  netif_unref(netif);
+  return err;
 }
 
 /** Remove a static entry from the ARP table previously added with a call to
@@ -529,24 +537,31 @@ err_t
 etharp_remove_static_entry(const ip4_addr_t *ipaddr)
 {
   s16_t i;
+  err_t err;
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_remove_static_entry: %"U16_F".%"U16_F".%"U16_F".%"U16_F"\n",
               ip4_addr1_16(ipaddr), ip4_addr2_16(ipaddr), ip4_addr3_16(ipaddr), ip4_addr4_16(ipaddr)));
+  SYS_ARCH_LOCK(&arp_mutex);
 
   /* find or create ARP entry */
   i = etharp_find_entry(ipaddr, ETHARP_FLAG_FIND_ONLY, NULL);
   /* bail out if no entry could be found */
   if (i < 0) {
-    return (err_t)i;
+    err = (err_t)i;
+    goto out;
   }
 
   if (arp_table[i].state != ETHARP_STATE_STATIC) {
     /* entry wasn't a static entry, cannot remove it */
-    return ERR_ARG;
+    err = ERR_ARG;
+    goto out;
   }
   /* entry found, free it */
   etharp_free_entry(i);
-  return ERR_OK;
+  err = ERR_OK;
+out:
+  SYS_ARCH_UNLOCK(&arp_mutex);
+  return err;
 }
 #endif /* ETHARP_SUPPORT_STATIC_ENTRIES */
 
@@ -560,12 +575,14 @@ etharp_cleanup_netif(struct netif *netif)
 {
   int i;
 
+  SYS_ARCH_LOCK(&arp_mutex);
   for (i = 0; i < ARP_TABLE_SIZE; ++i) {
     u8_t state = arp_table[i].state;
     if ((state != ETHARP_STATE_EMPTY) && (arp_table[i].netif == netif)) {
       etharp_free_entry(i);
     }
   }
+  SYS_ARCH_UNLOCK(&arp_mutex);
 }
 
 /**
@@ -590,12 +607,15 @@ etharp_find_addr(struct netif *netif, const ip4_addr_t *ipaddr,
 
   LWIP_UNUSED_ARG(netif);
 
+  SYS_ARCH_LOCK(&arp_mutex);
   i = etharp_find_entry(ipaddr, ETHARP_FLAG_FIND_ONLY, netif);
   if ((i >= 0) && (arp_table[i].state >= ETHARP_STATE_STABLE)) {
     *eth_ret = &arp_table[i].ethaddr;
     *ip_ret = &arp_table[i].ipaddr;
+    SYS_ARCH_UNLOCK(&arp_mutex);
     return i;
   }
+  SYS_ARCH_UNLOCK(&arp_mutex);
   return -1;
 }
 
@@ -691,8 +711,10 @@ etharp_input(struct pbuf *p, struct netif *netif)
          can result in directly sending the queued packets for this host.
      ARP message not directed to us?
       ->  update the source IP address in the cache, if present */
+  SYS_ARCH_LOCK(&arp_mutex);
   etharp_update_arp_entry(netif, &sipaddr, &(hdr->shwaddr),
                           for_us ? ETHARP_FLAG_TRY_HARD : ETHARP_FLAG_FIND_ONLY);
+  SYS_ARCH_UNLOCK(&arp_mutex);
 
   /* now act on the message itself */
   switch (hdr->opcode) {
@@ -743,6 +765,7 @@ etharp_input(struct pbuf *p, struct netif *netif)
 
 /** Just a small helper function that sends a pbuf to an ethernet address
  * in the arp_table specified by the index 'arp_idx'.
+ * Called with ARP lock held, returns with lock released.
  */
 static err_t
 etharp_output_to_arp_index(struct netif *netif, struct pbuf *q, netif_addr_idx_t arp_idx)
@@ -765,6 +788,7 @@ etharp_output_to_arp_index(struct netif *netif, struct pbuf *q, netif_addr_idx_t
       }
     }
   }
+  SYS_ARCH_UNLOCK(&arp_mutex);
 
   return ethernet_output(netif, q, (struct eth_addr *)(netif->hwaddr), &arp_table[arp_idx].ethaddr, ETHTYPE_IP);
 }
@@ -852,6 +876,7 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
         }
       }
     }
+    SYS_ARCH_LOCK(&arp_mutex);
 #if LWIP_NETIF_HWADDRHINT
     if (netif->hints != NULL) {
       /* per-pcb cached entry was given */
@@ -885,10 +910,12 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
         return etharp_output_to_arp_index(netif, q, i);
       }
     }
+    SYS_ARCH_UNLOCK(&arp_mutex);
     /* no stable entry found, use the (slower) query function:
        queue on destination Ethernet address belonging to ipaddr */
     return etharp_query(netif, dst_addr, q);
   }
+  SYS_ARCH_UNLOCK(&arp_mutex);
 
   /* continuation for multicast/broadcast destinations */
   /* obtain source Ethernet address of the given interface */
@@ -946,6 +973,8 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
     return ERR_ARG;
   }
 
+  SYS_ARCH_LOCK(&arp_mutex);
+
   /* find entry in ARP cache, ask to create entry if queueing packet */
   i_err = etharp_find_entry(ipaddr, ETHARP_FLAG_TRY_HARD, netif);
 
@@ -956,7 +985,8 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
       LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("etharp_query: packet dropped\n"));
       ETHARP_STATS_INC(etharp.memerr);
     }
-    return (err_t)i_err;
+    result = (err_t)i_err;
+    goto out;
   }
   LWIP_ASSERT("type overflow", (size_t)i_err < NETIF_ADDR_IDX_MAX);
   i = (netif_addr_idx_t)i_err;
@@ -985,7 +1015,7 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
          etharp_query again could lead to sending the queued packets. */
     }
     if (q == NULL) {
-      return result;
+      goto out;
     }
   }
 
@@ -1079,6 +1109,8 @@ etharp_query(struct netif *netif, const ip4_addr_t *ipaddr, struct pbuf *q)
       result = ERR_MEM;
     }
   }
+out:
+  SYS_ARCH_UNLOCK(&arp_mutex);
   return result;
 }
 

@@ -250,6 +250,7 @@ enum lwip_ipv6_scope_type
   selected_netif = ip6_route((src), (dest)); \
   if (selected_netif != NULL) { \
     ip6_addr_assign_zone((dest), IP6_UNKNOWN, selected_netif); \
+    netif_unref(selected_netif); \
   } } while (0)
 
 /**

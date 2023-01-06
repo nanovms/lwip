@@ -74,6 +74,8 @@ extern "C" {
    changes to this common part are made in one location instead of
    having to change all PCB structs. */
 #define IP_PCB                             \
+  /* reference count */                    \
+  u32_t refcount;                          \
   /* ip addresses in network byte order */ \
   ip_addr_t local_ip;                      \
   ip_addr_t remote_ip;                     \
@@ -125,6 +127,7 @@ struct ip_globals
   /** Destination IP address of current_header */
   ip_addr_t current_iphdr_dest;
 };
+extern sys_lock_t ip_mutex;
 
 #if LWIP_IPV4 && LWIP_IPV6
 /** Get the IPv4 header of the current packet.
@@ -165,7 +168,7 @@ struct ip_globals
 /** Get the transport layer protocol */
 #define ip_current_header_proto(ip_data)    IPH_PROTO(ip4_current_header(ip_data))
 /** Get the transport layer header */
-#define ip_next_header_ptr(ip_data)         ((const void*)((const u8_t*)ip4_current_header(ip_data) + (ip_data)->current_ip_header_tot_len))
+#define ip_next_header_ptr(ip_data)         ((const void*)(((const u8_t*)ip4_current_header(ip_data)) + (ip_data)->current_ip_header_tot_len))
 /** Source IP4 address of current_header */
 #define ip4_current_src_addr(ip_data)       (&(ip_data)->current_iphdr_src)
 /** Destination IP4 address of current_header */

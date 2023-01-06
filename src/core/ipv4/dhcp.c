@@ -187,6 +187,8 @@ static u8_t xid_initialised;
 static struct udp_pcb *dhcp_pcb;
 static u8_t dhcp_pcb_refcount;
 
+static sys_lock_t dhcp_mutex;
+
 /* DHCP client state machine functions */
 static err_t dhcp_discover(struct netif *netif);
 static err_t dhcp_select(struct netif *netif);
@@ -422,6 +424,116 @@ dhcp_select(struct netif *netif)
   return result;
 }
 
+static err_t
+dhcp_start_locked(struct netif *netif)
+{
+  struct dhcp *dhcp;
+  err_t result;
+
+  LWIP_ERROR("netif is not up, old style port?", netif_is_up(netif), return ERR_ARG;);
+  dhcp = netif_dhcp_data(netif);
+  LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_start(netif=%p) %c%c%"U16_F"\n", (void *)netif, netif->name[0], netif->name[1], (u16_t)netif->num));
+
+  /* check MTU of the netif */
+  if (netif->mtu < DHCP_MAX_MSG_LEN_MIN_REQUIRED) {
+    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): Cannot use this netif with DHCP: MTU is too small\n"));
+    return ERR_MEM;
+  }
+
+  /* no DHCP client attached yet? */
+  if (dhcp == NULL) {
+    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): mallocing new DHCP client\n"));
+    dhcp = (struct dhcp *)mem_malloc(sizeof(struct dhcp));
+    if (dhcp == NULL) {
+      LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): could not allocate dhcp\n"));
+      return ERR_MEM;
+    }
+
+    /* store this dhcp client in the netif */
+    netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP, dhcp);
+    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): allocated dhcp"));
+    /* already has DHCP client attached */
+  } else {
+    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_start(): restarting DHCP configuration\n"));
+
+    if (dhcp->pcb_allocated != 0) {
+      dhcp_dec_pcb_refcount(); /* free DHCP PCB if not needed any more */
+    }
+    /* dhcp is cleared below, no need to reset flag*/
+  }
+
+  /* clear data structure */
+  memset(dhcp, 0, sizeof(struct dhcp));
+  /* dhcp_set_state(&dhcp, DHCP_STATE_OFF); */
+
+  LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): starting DHCP configuration\n"));
+
+  if (dhcp_inc_pcb_refcount() != ERR_OK) { /* ensure DHCP PCB is allocated */
+    return ERR_MEM;
+  }
+  dhcp->pcb_allocated = 1;
+
+  if (!netif_is_link_up(netif)) {
+    /* set state INIT and wait for dhcp_network_changed() to call dhcp_discover() */
+    dhcp_set_state(dhcp, DHCP_STATE_INIT);
+    return ERR_OK;
+  }
+
+  /* (re)start the DHCP negotiation */
+  result = dhcp_discover(netif);
+  if (result != ERR_OK) {
+    /* free resources allocated above */
+    dhcp_release_and_stop(netif);
+    return ERR_MEM;
+  }
+  return result;
+}
+
+static u8_t dhcp_coarse_tmr_netif(struct netif *n, void *priv)
+{
+  /* only act on DHCP configured interfaces */
+  struct dhcp *dhcp = netif_dhcp_data(n);
+  if ((dhcp != NULL) && (dhcp->state != DHCP_STATE_OFF)) {
+    /* compare lease time to expire timeout */
+    if (dhcp->t0_timeout && (++dhcp->lease_used == dhcp->t0_timeout)) {
+      LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_coarse_tmr(): t0 timeout\n"));
+      /* this clients' lease time has expired */
+      dhcp_release_and_stop(n);
+      dhcp_start_locked(n);
+      /* timer is active (non zero), and triggers (zeroes) now? */
+    } else if (dhcp->t2_rebind_time && (dhcp->t2_rebind_time-- == 1)) {
+      LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_coarse_tmr(): t2 timeout\n"));
+      /* this clients' rebind timeout triggered */
+      dhcp_t2_timeout(n);
+      /* timer is active (non zero), and triggers (zeroes) now */
+    } else if (dhcp->t1_renew_time && (dhcp->t1_renew_time-- == 1)) {
+      LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_coarse_tmr(): t1 timeout\n"));
+      /* this clients' renewal timeout triggered */
+      dhcp_t1_timeout(n);
+    }
+  }
+  return false;
+}
+
+static u8_t dhcp_fine_tmr_netif(struct netif *n, void *priv)
+{
+  struct dhcp *dhcp = netif_dhcp_data(n);
+  /* only act on DHCP configured interfaces */
+  if (dhcp != NULL) {
+    /* timer is active (non zero), and is about to trigger now */
+    if (dhcp->request_timeout > 1) {
+      dhcp->request_timeout--;
+    } else if (dhcp->request_timeout == 1) {
+      dhcp->request_timeout--;
+      /* { dhcp->request_timeout == 0 } */
+      LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_fine_tmr(): request timeout\n"));
+      /* this client's request timeout triggered */
+      dhcp_timeout(n);
+    }
+  }
+  return false;
+}
+
 /**
  * The DHCP timer that checks for lease renewal/rebind timeouts.
  * Must be called once a minute (see @ref DHCP_COARSE_TIMER_SECS).
@@ -429,32 +541,11 @@ dhcp_select(struct netif *netif)
 void
 dhcp_coarse_tmr(void)
 {
-  struct netif *netif;
   LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_coarse_tmr()\n"));
+  SYS_ARCH_LOCK(&dhcp_mutex);
   /* iterate through all network interfaces */
-  NETIF_FOREACH(netif) {
-    /* only act on DHCP configured interfaces */
-    struct dhcp *dhcp = netif_dhcp_data(netif);
-    if ((dhcp != NULL) && (dhcp->state != DHCP_STATE_OFF)) {
-      /* compare lease time to expire timeout */
-      if (dhcp->t0_timeout && (++dhcp->lease_used == dhcp->t0_timeout)) {
-        LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_coarse_tmr(): t0 timeout\n"));
-        /* this clients' lease time has expired */
-        dhcp_release_and_stop(netif);
-        dhcp_start(netif);
-        /* timer is active (non zero), and triggers (zeroes) now? */
-      } else if (dhcp->t2_rebind_time && (dhcp->t2_rebind_time-- == 1)) {
-        LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_coarse_tmr(): t2 timeout\n"));
-        /* this clients' rebind timeout triggered */
-        dhcp_t2_timeout(netif);
-        /* timer is active (non zero), and triggers (zeroes) now */
-      } else if (dhcp->t1_renew_time && (dhcp->t1_renew_time-- == 1)) {
-        LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_coarse_tmr(): t1 timeout\n"));
-        /* this clients' renewal timeout triggered */
-        dhcp_t1_timeout(netif);
-      }
-    }
-  }
+  netif_iterate(dhcp_coarse_tmr_netif, NULL);
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
 }
 
 /**
@@ -467,24 +558,10 @@ dhcp_coarse_tmr(void)
 void
 dhcp_fine_tmr(void)
 {
-  struct netif *netif;
+  SYS_ARCH_LOCK(&dhcp_mutex);
   /* loop through netif's */
-  NETIF_FOREACH(netif) {
-    struct dhcp *dhcp = netif_dhcp_data(netif);
-    /* only act on DHCP configured interfaces */
-    if (dhcp != NULL) {
-      /* timer is active (non zero), and is about to trigger now */
-      if (dhcp->request_timeout > 1) {
-        dhcp->request_timeout--;
-      } else if (dhcp->request_timeout == 1) {
-        dhcp->request_timeout--;
-        /* { dhcp->request_timeout == 0 } */
-        LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_fine_tmr(): request timeout\n"));
-        /* this client's request timeout triggered */
-        dhcp_timeout(netif);
-      }
-    }
-  }
+  netif_iterate(dhcp_fine_tmr_netif, NULL);
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
 }
 
 /**
@@ -513,7 +590,7 @@ dhcp_timeout(struct netif *netif)
     } else {
       LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_timeout(): REQUESTING, releasing, restarting\n"));
       dhcp_release_and_stop(netif);
-      dhcp_start(netif);
+      dhcp_start_locked(netif);
     }
 #if DHCP_DOES_ARP_CHECK
     /* received no ARP reply for the offered address (which is good) */
@@ -714,10 +791,12 @@ void dhcp_cleanup(struct netif *netif)
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("netif != NULL", netif != NULL);
 
+  SYS_ARCH_LOCK(&dhcp_mutex);
   if (netif_dhcp_data(netif) != NULL) {
     mem_free(netif_dhcp_data(netif));
     netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP, NULL);
   }
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
 }
 
 /**
@@ -736,67 +815,13 @@ void dhcp_cleanup(struct netif *netif)
 err_t
 dhcp_start(struct netif *netif)
 {
-  struct dhcp *dhcp;
   err_t result;
 
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_ERROR("netif != NULL", (netif != NULL), return ERR_ARG;);
-  LWIP_ERROR("netif is not up, old style port?", netif_is_up(netif), return ERR_ARG;);
-  dhcp = netif_dhcp_data(netif);
-  LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_start(netif=%p) %c%c%"U16_F"\n", (void *)netif, netif->name[0], netif->name[1], (u16_t)netif->num));
-
-  /* check MTU of the netif */
-  if (netif->mtu < DHCP_MAX_MSG_LEN_MIN_REQUIRED) {
-    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): Cannot use this netif with DHCP: MTU is too small\n"));
-    return ERR_MEM;
-  }
-
-  /* no DHCP client attached yet? */
-  if (dhcp == NULL) {
-    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): mallocing new DHCP client\n"));
-    dhcp = (struct dhcp *)mem_malloc(sizeof(struct dhcp));
-    if (dhcp == NULL) {
-      LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): could not allocate dhcp\n"));
-      return ERR_MEM;
-    }
-
-    /* store this dhcp client in the netif */
-    netif_set_client_data(netif, LWIP_NETIF_CLIENT_DATA_INDEX_DHCP, dhcp);
-    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): allocated dhcp"));
-    /* already has DHCP client attached */
-  } else {
-    LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("dhcp_start(): restarting DHCP configuration\n"));
-
-    if (dhcp->pcb_allocated != 0) {
-      dhcp_dec_pcb_refcount(); /* free DHCP PCB if not needed any more */
-    }
-    /* dhcp is cleared below, no need to reset flag*/
-  }
-
-  /* clear data structure */
-  memset(dhcp, 0, sizeof(struct dhcp));
-  /* dhcp_set_state(&dhcp, DHCP_STATE_OFF); */
-
-  LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_start(): starting DHCP configuration\n"));
-
-  if (dhcp_inc_pcb_refcount() != ERR_OK) { /* ensure DHCP PCB is allocated */
-    return ERR_MEM;
-  }
-  dhcp->pcb_allocated = 1;
-
-  if (!netif_is_link_up(netif)) {
-    /* set state INIT and wait for dhcp_network_changed() to call dhcp_discover() */
-    dhcp_set_state(dhcp, DHCP_STATE_INIT);
-    return ERR_OK;
-  }
-
-  /* (re)start the DHCP negotiation */
-  result = dhcp_discover(netif);
-  if (result != ERR_OK) {
-    /* free resources allocated above */
-    dhcp_release_and_stop(netif);
-    return ERR_MEM;
-  }
+  SYS_ARCH_LOCK(&dhcp_mutex);
+  result = dhcp_start_locked(netif);
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
   return result;
 }
 
@@ -820,8 +845,9 @@ dhcp_inform(struct netif *netif)
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_ERROR("netif != NULL", (netif != NULL), return;);
 
+  SYS_ARCH_LOCK(&dhcp_mutex);
   if (dhcp_inc_pcb_refcount() != ERR_OK) { /* ensure DHCP PCB is allocated */
-    return;
+    goto out;
   }
 
   memset(&dhcp, 0, sizeof(struct dhcp));
@@ -847,6 +873,8 @@ dhcp_inform(struct netif *netif)
   }
 
   dhcp_dec_pcb_refcount(); /* delete DHCP PCB if not needed any more */
+out:
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
 }
 
 /** Handle a possible change in the network configuration.
@@ -862,6 +890,7 @@ dhcp_network_changed(struct netif *netif)
   if (!dhcp) {
     return;
   }
+  SYS_ARCH_LOCK(&dhcp_mutex);
   switch (dhcp->state) {
     case DHCP_STATE_REBINDING:
     case DHCP_STATE_RENEWING:
@@ -889,6 +918,7 @@ dhcp_network_changed(struct netif *netif)
       dhcp_discover(netif);
       break;
   }
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
 }
 
 #if DHCP_DOES_ARP_CHECK
@@ -905,6 +935,7 @@ dhcp_arp_reply(struct netif *netif, const ip4_addr_t *addr)
   struct dhcp *dhcp;
 
   LWIP_ERROR("netif != NULL", (netif != NULL), return;);
+  SYS_ARCH_LOCK(&dhcp_mutex);
   dhcp = netif_dhcp_data(netif);
   LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE, ("dhcp_arp_reply()\n"));
   /* is a DHCP client doing an ARP check? */
@@ -920,6 +951,7 @@ dhcp_arp_reply(struct netif *netif, const ip4_addr_t *addr)
       dhcp_decline(netif);
     }
   }
+  SYS_ARCH_UNLOCK(&dhcp_mutex);
 }
 
 /**

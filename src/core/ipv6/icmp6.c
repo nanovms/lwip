@@ -372,6 +372,7 @@ icmp6_send_response_with_addrs(struct pbuf *p, u8_t code, u32_t data, u8_t type,
   }
   icmp6_send_response_with_addrs_and_netif(p, code, data, type, reply_src,
     reply_dest, netif);
+  netif_unref(netif);
 }
 
 /**

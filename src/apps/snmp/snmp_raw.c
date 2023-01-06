@@ -65,6 +65,7 @@ snmp_get_local_ip_for_dst(void *handle, const ip_addr_t *dst, ip_addr_t *result)
   struct udp_pcb *udp_pcb = (struct udp_pcb *)handle;
   struct netif *dst_if;
   const ip_addr_t *dst_ip;
+  u8_t result;
 
   LWIP_UNUSED_ARG(udp_pcb); /* unused in case of IPV4 only configuration */
 
@@ -72,10 +73,14 @@ snmp_get_local_ip_for_dst(void *handle, const ip_addr_t *dst, ip_addr_t *result)
 
   if ((dst_if != NULL) && (dst_ip != NULL)) {
     ip_addr_copy(*result, *dst_ip);
-    return 1;
+    result = 1;
   } else {
-    return 0;
+    result = 0;
   }
+  if (dst_if != NULL) {
+    netif_unref(dst_if);
+  }
+  return result;
 }
 
 /**

@@ -129,6 +129,7 @@ ip_reass_tmr(void)
 {
   struct ip_reassdata *r, *prev = NULL;
 
+  SYS_ARCH_LOCK(&ip_mutex);
   r = reassdatagrams;
   while (r != NULL) {
     /* Decrement the timer. Once it reaches 0,
@@ -149,6 +150,7 @@ ip_reass_tmr(void)
       ip_reass_free_complete_datagram(tmp, prev);
     }
   }
+  SYS_ARCH_UNLOCK(&ip_mutex);
 }
 
 /**
@@ -533,6 +535,7 @@ ip4_reass(struct pbuf *p)
 
   /* Check if we are allowed to enqueue more datagrams. */
   clen = pbuf_clen(p);
+  SYS_ARCH_LOCK(&ip_mutex);
   if ((ip_reass_pbufcount + clen) > IP_REASS_MAX_PBUFS) {
 #if IP_REASS_FREE_OLDEST
     if (!ip_reass_remove_oldest_datagram(fraghdr, clen) ||
@@ -545,7 +548,7 @@ ip4_reass(struct pbuf *p)
       IPFRAG_STATS_INC(ip_frag.memerr);
       /* @todo: send ICMP time exceeded here? */
       /* drop this pbuf */
-      goto nullreturn;
+      goto unlock_nullreturn;
     }
   }
 
@@ -568,7 +571,7 @@ ip4_reass(struct pbuf *p)
     ipr = ip_reass_enqueue_new_datagram(fraghdr, clen);
     /* Bail if unable to enqueue */
     if (ipr == NULL) {
-      goto nullreturn;
+      goto unlock_nullreturn;
     }
   } else {
     if (((lwip_ntohs(IPH_OFFSET(fraghdr)) & IP_OFFMASK) == 0) &&
@@ -667,6 +670,7 @@ ip4_reass(struct pbuf *p)
     LWIP_ASSERT("ip_reass_pbufcount >= clen", ip_reass_pbufcount >= clen);
     ip_reass_pbufcount = (u16_t)(ip_reass_pbufcount - clen);
 
+    SYS_ARCH_UNLOCK(&ip_mutex);
     MIB2_STATS_INC(mib2.ipreasmoks);
 
     /* Return the pbuf chain */
@@ -674,6 +678,7 @@ ip4_reass(struct pbuf *p)
   }
   /* the datagram is not (yet?) reassembled completely */
   LWIP_DEBUGF(IP_REASS_DEBUG, ("ip_reass_pbufcount: %d out\n", ip_reass_pbufcount));
+  SYS_ARCH_UNLOCK(&ip_mutex);
   return NULL;
 
 nullreturn_ipr:
@@ -684,6 +689,8 @@ nullreturn_ipr:
     ip_reass_dequeue_datagram(ipr, NULL);
   }
 
+unlock_nullreturn:
+  SYS_ARCH_UNLOCK(&ip_mutex);
 nullreturn:
   LWIP_DEBUGF(IP_REASS_DEBUG, ("ip4_reass: nullreturn\n"));
   IPFRAG_STATS_INC(ip_frag.drop);

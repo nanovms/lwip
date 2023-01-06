@@ -61,6 +61,7 @@
 #include "lwip/ip.h"
 
 /** Global data for both IPv4 and IPv6 */
+sys_lock_t ip_mutex;
 
 #if LWIP_IPV4 && LWIP_IPV6
 
