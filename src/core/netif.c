@@ -387,10 +387,6 @@ netif_add(struct netif *netif,
   netif->loop_cnt_current = 0;
 #endif /* ENABLE_LOOPBACK && LWIP_LOOPBACK_MAX_PBUFS */
 
-#if LWIP_IPV4
-  netif_set_addr(netif, ipaddr, netmask, gw);
-#endif /* LWIP_IPV4 */
-
   /* call user specified initialization function for netif */
   if (init(netif) != ERR_OK) {
     return NULL;
@@ -437,6 +433,11 @@ netif_add(struct netif *netif,
   netif_list = netif;
 #endif /* "LWIP_SINGLE_NETIF */
   SYS_ARCH_UNLOCK(&netif_mutex);
+
+#if LWIP_IPV4
+  netif_set_addr(netif, ipaddr, netmask, gw);
+#endif /* LWIP_IPV4 */
+
   mib2_netif_added(netif);
 
 #if LWIP_IGMP
