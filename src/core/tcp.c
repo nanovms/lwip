@@ -2614,7 +2614,6 @@ s16_t
 tcp_pcbs_sane(void)
 {
   struct tcp_pcb *pcb;
-  SYS_ARCH_LOCK(&tcp_mutex);
   for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
     LWIP_ASSERT("tcp_pcbs_sane: active pcb->state != CLOSED", pcb->state != CLOSED);
     LWIP_ASSERT("tcp_pcbs_sane: active pcb->state != LISTEN", pcb->state != LISTEN);
@@ -2623,7 +2622,6 @@ tcp_pcbs_sane(void)
   for (pcb = tcp_tw_pcbs; pcb != NULL; pcb = pcb->next) {
     LWIP_ASSERT("tcp_pcbs_sane: tw pcb->state == TIME-WAIT", pcb->state == TIME_WAIT);
   }
-  SYS_ARCH_UNLOCK(&tcp_mutex);
   return 1;
 }
 #endif /* TCP_DEBUG */

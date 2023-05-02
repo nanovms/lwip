@@ -608,7 +608,11 @@ aborted:
     pbuf_free(p);
   }
 
+#if TCP_INPUT_DEBUG
+  SYS_ARCH_LOCK(&tcp_mutex);
   LWIP_ASSERT("tcp_input: tcp_pcbs_sane()", tcp_pcbs_sane());
+  SYS_ARCH_UNLOCK(&tcp_mutex);
+#endif
   PERF_STOP("tcp_input");
   return;
 dropped:
