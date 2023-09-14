@@ -543,6 +543,7 @@ mld6_leavegroup_netif(struct netif *netif, const ip6_addr_t *groupaddr)
 
 static u8_t mld6_tmr_netif(struct netif *netif, void *priv)
 {
+  SYS_ARCH_LOCK(&mld6_mutex);
   struct mld_group *group = netif_mld6_data(netif);
 
   while (group != NULL) {
@@ -559,6 +560,7 @@ static u8_t mld6_tmr_netif(struct netif *netif, void *priv)
     }
     group = group->next;
   }
+  SYS_ARCH_UNLOCK(&mld6_mutex);
   return false;
 }
 
@@ -571,9 +573,7 @@ static u8_t mld6_tmr_netif(struct netif *netif, void *priv)
 void
 mld6_tmr(void)
 {
-  SYS_ARCH_LOCK(&mld6_mutex);
   netif_iterate(mld6_tmr_netif, NULL);
-  SYS_ARCH_UNLOCK(&mld6_mutex);
 }
 
 /**
