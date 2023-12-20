@@ -751,6 +751,7 @@ ip4_input(struct pbuf *p, struct netif *inp)
 
   ip_data.current_netif = netif;
   ip_data.current_ip4_header = iphdr;
+  ip_data.current_ip6_header = NULL;
   ip_data.current_ip_header_tot_len = IPH_HL_BYTES(iphdr);
 
 #if LWIP_RAW
