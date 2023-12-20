@@ -1006,7 +1006,7 @@ tcp_update_rcv_ann_wnd(struct tcp_pcb *pcb)
  * @param len the amount of bytes that have been read by the application
  */
 void
-tcp_recved(struct tcp_pcb *pcb, u16_t len)
+tcp_recved(struct tcp_pcb *pcb, tcpwnd_size_t len)
 {
   u32_t wnd_inflation;
   tcpwnd_size_t rcv_wnd;
@@ -1019,7 +1019,7 @@ tcp_recved(struct tcp_pcb *pcb, u16_t len)
   LWIP_ASSERT("don't call tcp_recved for listen-pcbs",
               pcb->state != LISTEN);
 
-  rcv_wnd = (tcpwnd_size_t)(pcb->rcv_wnd + len);
+  rcv_wnd = pcb->rcv_wnd + len;
   if ((rcv_wnd > TCP_WND_MAX(pcb)) || (rcv_wnd < pcb->rcv_wnd)) {
     /* window got too big or tcpwnd_size_t overflow */
     LWIP_DEBUGF(TCP_DEBUG, ("tcp_recved: window got too big or tcpwnd_size_t overflow\n"));

@@ -463,7 +463,7 @@ void             tcp_backlog_accepted(struct tcp_pcb* pcb);
 #endif /* TCP_LISTEN_BACKLOG */
 #define          tcp_accepted(pcb) do { LWIP_UNUSED_ARG(pcb); } while(0) /* compatibility define, not needed any more */
 
-void             tcp_recved  (struct tcp_pcb *pcb, u16_t len);
+void             tcp_recved  (struct tcp_pcb *pcb, tcpwnd_size_t len);
 err_t            tcp_bind    (struct tcp_pcb *pcb, const ip_addr_t *ipaddr,
                               u16_t port);
 void             tcp_bind_netif(struct tcp_pcb *pcb, const struct netif *netif);
