@@ -93,7 +93,7 @@ static void tcp_parseopt(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp
 
 static struct tcp_pcb *tcp_listen_input(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr,
                                         struct tcp_input_parsed *tcp_data, struct ip_globals *ip_data);
-static void tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr,
+static int tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr,
                                struct tcp_input_parsed *tcp_data, struct ip_globals *ip_data);
 
 static int tcp_input_delayed_close(struct tcp_pcb *pcb, u8_t recv_flags);
@@ -298,6 +298,8 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
     }
   }
   if (pcb == NULL) {
+    struct tcp_pcb *tw_pcb = NULL, *tw_pcb_prev = NULL;
+
     /* If it did not go to an active connection, we check the connections
        in the TIME-WAIT state. */
     for (pcb = tcp_tw_pcbs; pcb != NULL; pcb = pcb->next) {
@@ -306,6 +308,7 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
       /* check if PCB is bound to specific netif */
       if ((pcb->netif_idx != NETIF_NO_INDEX) &&
           (pcb->netif_idx != netif_get_index(ip_data->current_input_netif))) {
+        tw_pcb_prev = pcb;
         continue;
       }
 
@@ -313,23 +316,33 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
           pcb->local_port == tcphdr->dest &&
           ip_addr_cmp(&pcb->remote_ip, &ip_data->current_iphdr_src) &&
           ip_addr_cmp(&pcb->local_ip, &ip_data->current_iphdr_dest)) {
+        int consumed;
+
         /* We don't really care enough to move this PCB to the front
            of the list since we are not very likely to receive that
            many segments for connections in TIME-WAIT. */
         LWIP_DEBUGF(TCP_INPUT_DEBUG, ("tcp_input: packed for TIME_WAITing connection.\n"));
-        tcp_ref(pcb);
-        SYS_ARCH_UNLOCK(&tcp_mutex);
 #ifdef LWIP_HOOK_TCP_INPACKET_PCB
         if (LWIP_HOOK_TCP_INPACKET_PCB(pcb, tcphdr, tcphdr_optlen, tcphdr_opt1len,
                                        tcphdr_opt2, p) == ERR_OK)
 #endif
         {
-          tcp_timewait_input(pcb, tcphdr, &tcp_data, ip_data);
+          consumed = tcp_timewait_input(pcb, tcphdr, &tcp_data, ip_data);
         }
-        tcp_unref(pcb);
+#ifdef LWIP_HOOK_TCP_INPACKET_PCB
+        else {
+          SYS_ARCH_UNLOCK(&tcp_mutex);
+          consumed = 1;
+        }
+#endif
+        if (!consumed) {
+          tw_pcb = pcb;
+          break;
+        }
         pbuf_free(p);
         return;
       }
+      tw_pcb_prev = pcb;
     }
 
     /* Finally, if we still did not get a match, we check all PCBs that
@@ -389,6 +402,14 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
         tcp_listen_pcbs.listen_pcbs = lpcb;
       } else {
         TCP_STATS_INC(tcp.cachehit);
+      }
+      if (tw_pcb) {
+          /* Remove PCB from tcp_tw_pcbs list. */
+          if (tw_pcb_prev != NULL)
+            tw_pcb_prev->next = tw_pcb->next;
+          else
+            tcp_tw_pcbs = pcb->next;
+          tcp_free(tw_pcb);
       }
       tcp_lpcb_ref(lpcb);
       SYS_ARCH_UNLOCK(&tcp_mutex);
@@ -938,26 +959,32 @@ tcp_listen_input(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct tcp_
 /**
  * Called by tcp_input() when a segment arrives for a connection in
  * TIME_WAIT.
+ * This function is called with the global TCP mutex locked; if the segment is consumed, it returns
+ * with the mutex unlocked.
  *
  * @param pcb the tcp_pcb for which a segment arrived
  * @param tcphdr TCP header of the received segment
  * @param tcp_data data for the received segment computed by the TCP input parser
  * @param ip_data data for the received segment computed by the IP input parser
+ * @return a boolean value indicating whether the segment has been consumed
  */
-static void
+static int
 tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp_input_parsed *tcp_data, struct ip_globals *ip_data)
 {
+  int rst;
+
   /* RFC 1337: in TIME_WAIT, ignore RST and ACK FINs + any 'acceptable' segments */
   /* RFC 793 3.9 Event Processing - Segment Arrives:
    * - first check sequence number - we skip that one in TIME_WAIT (always
    *   acceptable since we only send ACKs)
    * - second check the RST bit (... return) */
   if (tcp_data->flags & TCP_RST) {
-    return;
+    SYS_ARCH_UNLOCK(&tcp_mutex);
+    return 1;
   }
 
   LWIP_ASSERT("tcp_timewait_input: invalid pcb", pcb != NULL);
-  tcp_lock(pcb);
+  rst = false;
 
   /* - fourth, check the SYN bit, */
   if (tcp_data->flags & TCP_SYN) {
@@ -965,9 +992,13 @@ tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp_input
        should be sent in reply */
     if (TCP_SEQ_BETWEEN(tcphdr->seqno, pcb->rcv_nxt, pcb->rcv_nxt + pcb->rcv_wnd)) {
       /* If the SYN is in the window it is an error, send a reset */
-      tcp_rst(pcb, tcphdr->ackno, tcphdr->seqno + tcp_data->len, &ip_data->current_iphdr_dest,
-              &ip_data->current_iphdr_src, tcphdr->dest, tcphdr->src);
-      goto unlock;
+      rst = true;
+    } else if (!(tcp_data->flags & TCP_ACK) && TCP_SEQ_GT(tcphdr->seqno, pcb->rcv_nxt)) {
+      /* RFC 1122 4.2.2.13: a connection in TIME-WAIT state may accept a new SYN from the remote TCP
+       * to reopen the connection directly from TIME-WAIT state, if it assigns its initial sequence
+       * number for the new connection to be larger than the largest sequence number it used on the
+       * previous connection incarnation. */
+      return 0; /* segment to be matched against PCBs listening for incoming connections */
     }
   } else if (tcp_data->flags & TCP_FIN) {
     /* - eighth, check the FIN bit: Remain in the TIME-WAIT state.
@@ -975,13 +1006,24 @@ tcp_timewait_input(struct tcp_pcb *pcb, struct tcp_hdr *tcphdr, struct tcp_input
     pcb->tmr = tcp_ticks;
   }
 
-  if ((tcp_data->len > 0)) {
-    /* Acknowledge data, FIN or out-of-window SYN */
-    tcp_ack_now(pcb);
-    tcp_output(pcb);
+  if (rst || (tcp_data->len > 0)) {
+    tcp_ref(pcb);
+    SYS_ARCH_UNLOCK(&tcp_mutex);
+    tcp_lock(pcb);
+    if (rst) {
+      tcp_rst(pcb, tcphdr->ackno, tcphdr->seqno + tcp_data->len, &ip_data->current_iphdr_dest,
+              &ip_data->current_iphdr_src, tcphdr->dest, tcphdr->src);
+    } else {
+      /* Acknowledge data, FIN or out-of-window SYN */
+      tcp_ack_now(pcb);
+      tcp_output(pcb);
+    }
+    tcp_unlock(pcb);
+    tcp_unref(pcb);
+  } else {
+    SYS_ARCH_UNLOCK(&tcp_mutex);
   }
-unlock:
-  tcp_unlock(pcb);
+  return 1;
 }
 
 /**
