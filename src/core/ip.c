@@ -95,13 +95,13 @@ char *ipaddr_ntoa(const ip_addr_t *addr)
  * @param addr ip address in network order to convert
  * @param buf target buffer where the string is stored
  * @param buflen length of buf
- * @return either pointer to buf which now holds the ASCII
- *         representation of addr or NULL if buf was too small
+ * @return either the string length of the ASCII
+ *         representation of addr or 0 if buf was too small
  */
-char *ipaddr_ntoa_r(const ip_addr_t *addr, char *buf, int buflen)
+int ipaddr_ntoa_r(const ip_addr_t *addr, char *buf, int buflen)
 {
   if (addr == NULL) {
-    return NULL;
+    return 0;
   }
   if (IP_IS_V6(addr)) {
     return ip6addr_ntoa_r(ip_2_ip6(addr), buf, buflen);
@@ -120,29 +120,26 @@ char *ipaddr_ntoa_r(const ip_addr_t *addr, char *buf, int buflen)
  * @return 1 on success, 0 on error
  */
 int
-ipaddr_aton(const char *cp, ip_addr_t *addr)
+ipaddr_aton(sstring cp, ip_addr_t *addr)
 {
-  if (cp != NULL) {
-    const char *c;
-    for (c = cp; *c != 0; c++) {
-      if (*c == ':') {
-        /* contains a colon: IPv6 address */
-        if (addr) {
-          IP_SET_TYPE_VAL(*addr, IPADDR_TYPE_V6);
-        }
-        return ip6addr_aton(cp, ip_2_ip6(addr));
-      } else if (*c == '.') {
-        /* contains a dot: IPv4 address */
-        break;
+  for (bytes i = 0; i < cp.len; i++) {
+    const char c = cp.ptr[i];
+    if (c == ':') {
+      /* contains a colon: IPv6 address */
+      if (addr) {
+        IP_SET_TYPE_VAL(*addr, IPADDR_TYPE_V6);
       }
+      return ip6addr_aton(cp, ip_2_ip6(addr));
+    } else if (c == '.') {
+      /* contains a dot: IPv4 address */
+      break;
     }
-    /* call ip4addr_aton as fallback or if IPv4 was found */
-    if (addr) {
-      IP_SET_TYPE_VAL(*addr, IPADDR_TYPE_V4);
-    }
-    return ip4addr_aton(cp, ip_2_ip4(addr));
   }
-  return 0;
+  /* call ip4addr_aton as fallback or if IPv4 was found */
+  if (addr) {
+    IP_SET_TYPE_VAL(*addr, IPADDR_TYPE_V4);
+  }
+  return ip4addr_aton(cp, ip_2_ip4(addr));
 }
 
 /**

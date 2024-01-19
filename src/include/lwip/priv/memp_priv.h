@@ -108,7 +108,7 @@ typedef enum {
 struct memp_desc {
 #if defined(LWIP_DEBUG) || MEMP_OVERFLOW_CHECK || LWIP_STATS_DISPLAY
   /** Textual description */
-  const char *desc;
+  sstring desc;
 #endif /* LWIP_DEBUG || MEMP_OVERFLOW_CHECK || LWIP_STATS_DISPLAY */
 #if MEMP_STATS
   /** Statistics */
@@ -131,7 +131,7 @@ struct memp_desc {
 };
 
 #if defined(LWIP_DEBUG) || MEMP_OVERFLOW_CHECK || LWIP_STATS_DISPLAY
-#define DECLARE_LWIP_MEMPOOL_DESC(desc) (desc),
+#define DECLARE_LWIP_MEMPOOL_DESC(desc) ss_static_init(desc),
 #else
 #define DECLARE_LWIP_MEMPOOL_DESC(desc)
 #endif

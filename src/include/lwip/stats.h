@@ -97,7 +97,7 @@ struct stats_igmp {
 /** Memory stats */
 struct stats_mem {
 #if defined(LWIP_DEBUG) || LWIP_STATS_DISPLAY
-  const char *name;
+  sstring name;
 #endif /* defined(LWIP_DEBUG) || LWIP_STATS_DISPLAY */
   STAT_COUNTER err;
   mem_size_t avail;
@@ -323,7 +323,7 @@ void stats_init(void);
 
 #if TCP_STATS
 #define TCP_STATS_INC(x) STATS_INC(x)
-#define TCP_STATS_DISPLAY() stats_display_proto(&lwip_stats.tcp, "TCP")
+#define TCP_STATS_DISPLAY() stats_display_proto(&lwip_stats.tcp, ss("TCP"))
 #else
 #define TCP_STATS_INC(x)
 #define TCP_STATS_DISPLAY()
@@ -331,7 +331,7 @@ void stats_init(void);
 
 #if UDP_STATS
 #define UDP_STATS_INC(x) STATS_INC(x)
-#define UDP_STATS_DISPLAY() stats_display_proto(&lwip_stats.udp, "UDP")
+#define UDP_STATS_DISPLAY() stats_display_proto(&lwip_stats.udp, ss("UDP"))
 #else
 #define UDP_STATS_INC(x)
 #define UDP_STATS_DISPLAY()
@@ -339,7 +339,7 @@ void stats_init(void);
 
 #if ICMP_STATS
 #define ICMP_STATS_INC(x) STATS_INC(x)
-#define ICMP_STATS_DISPLAY() stats_display_proto(&lwip_stats.icmp, "ICMP")
+#define ICMP_STATS_DISPLAY() stats_display_proto(&lwip_stats.icmp, ss("ICMP"))
 #else
 #define ICMP_STATS_INC(x)
 #define ICMP_STATS_DISPLAY()
@@ -347,7 +347,7 @@ void stats_init(void);
 
 #if IGMP_STATS
 #define IGMP_STATS_INC(x) STATS_INC(x)
-#define IGMP_STATS_DISPLAY() stats_display_igmp(&lwip_stats.igmp, "IGMP")
+#define IGMP_STATS_DISPLAY() stats_display_igmp(&lwip_stats.igmp, ss("IGMP"))
 #else
 #define IGMP_STATS_INC(x)
 #define IGMP_STATS_DISPLAY()
@@ -355,7 +355,7 @@ void stats_init(void);
 
 #if IP_STATS
 #define IP_STATS_INC(x) STATS_INC(x)
-#define IP_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip, "IP")
+#define IP_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip, ss("IP"))
 #else
 #define IP_STATS_INC(x)
 #define IP_STATS_DISPLAY()
@@ -363,7 +363,7 @@ void stats_init(void);
 
 #if IPFRAG_STATS
 #define IPFRAG_STATS_INC(x) STATS_INC(x)
-#define IPFRAG_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip_frag, "IP_FRAG")
+#define IPFRAG_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip_frag, ss("IP_FRAG"))
 #else
 #define IPFRAG_STATS_INC(x)
 #define IPFRAG_STATS_DISPLAY()
@@ -371,7 +371,7 @@ void stats_init(void);
 
 #if ETHARP_STATS
 #define ETHARP_STATS_INC(x) STATS_INC(x)
-#define ETHARP_STATS_DISPLAY() stats_display_proto(&lwip_stats.etharp, "ETHARP")
+#define ETHARP_STATS_DISPLAY() stats_display_proto(&lwip_stats.etharp, ss("ETHARP"))
 #else
 #define ETHARP_STATS_INC(x)
 #define ETHARP_STATS_DISPLAY()
@@ -379,7 +379,7 @@ void stats_init(void);
 
 #if LINK_STATS
 #define LINK_STATS_INC(x) STATS_INC(x)
-#define LINK_STATS_DISPLAY() stats_display_proto(&lwip_stats.link, "LINK")
+#define LINK_STATS_DISPLAY() stats_display_proto(&lwip_stats.link, ss("LINK"))
 #else
 #define LINK_STATS_INC(x)
 #define LINK_STATS_DISPLAY()
@@ -390,7 +390,7 @@ void stats_init(void);
 #define MEM_STATS_INC(x) STATS_INC(mem.x)
 #define MEM_STATS_INC_USED(x, y) STATS_INC_USED(mem, y, mem_size_t)
 #define MEM_STATS_DEC_USED(x, y) lwip_stats.mem.x = (mem_size_t)((lwip_stats.mem.x) - (y))
-#define MEM_STATS_DISPLAY() stats_display_mem(&lwip_stats.mem, "HEAP")
+#define MEM_STATS_DISPLAY() stats_display_mem(&lwip_stats.mem, ss("HEAP"))
 #else
 #define MEM_STATS_AVAIL(x, y)
 #define MEM_STATS_INC(x)
@@ -423,7 +423,7 @@ void stats_init(void);
 
 #if IP6_STATS
 #define IP6_STATS_INC(x) STATS_INC(x)
-#define IP6_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip6, "IPv6")
+#define IP6_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip6, ss("IPv6"))
 #else
 #define IP6_STATS_INC(x)
 #define IP6_STATS_DISPLAY()
@@ -431,7 +431,7 @@ void stats_init(void);
 
 #if ICMP6_STATS
 #define ICMP6_STATS_INC(x) STATS_INC(x)
-#define ICMP6_STATS_DISPLAY() stats_display_proto(&lwip_stats.icmp6, "ICMPv6")
+#define ICMP6_STATS_DISPLAY() stats_display_proto(&lwip_stats.icmp6, ss("ICMPv6"))
 #else
 #define ICMP6_STATS_INC(x)
 #define ICMP6_STATS_DISPLAY()
@@ -439,7 +439,7 @@ void stats_init(void);
 
 #if IP6_FRAG_STATS
 #define IP6_FRAG_STATS_INC(x) STATS_INC(x)
-#define IP6_FRAG_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip6_frag, "IPv6 FRAG")
+#define IP6_FRAG_STATS_DISPLAY() stats_display_proto(&lwip_stats.ip6_frag, ss("IPv6 FRAG"))
 #else
 #define IP6_FRAG_STATS_INC(x)
 #define IP6_FRAG_STATS_DISPLAY()
@@ -447,7 +447,7 @@ void stats_init(void);
 
 #if MLD6_STATS
 #define MLD6_STATS_INC(x) STATS_INC(x)
-#define MLD6_STATS_DISPLAY() stats_display_igmp(&lwip_stats.mld6, "MLDv1")
+#define MLD6_STATS_DISPLAY() stats_display_igmp(&lwip_stats.mld6, ss("MLDv1"))
 #else
 #define MLD6_STATS_INC(x)
 #define MLD6_STATS_DISPLAY()
@@ -455,7 +455,7 @@ void stats_init(void);
 
 #if ND6_STATS
 #define ND6_STATS_INC(x) STATS_INC(x)
-#define ND6_STATS_DISPLAY() stats_display_proto(&lwip_stats.nd6, "ND")
+#define ND6_STATS_DISPLAY() stats_display_proto(&lwip_stats.nd6, ss("ND"))
 #else
 #define ND6_STATS_INC(x)
 #define ND6_STATS_DISPLAY()
@@ -470,9 +470,9 @@ void stats_init(void);
 /* Display of statistics */
 #if LWIP_STATS_DISPLAY
 void stats_display(void);
-void stats_display_proto(struct stats_proto *proto, const char *name);
-void stats_display_igmp(struct stats_igmp *igmp, const char *name);
-void stats_display_mem(struct stats_mem *mem, const char *name);
+void stats_display_proto(struct stats_proto *proto, sstring name);
+void stats_display_igmp(struct stats_igmp *igmp, sstring name);
+void stats_display_mem(struct stats_mem *mem, sstring name);
 void stats_display_memp(struct stats_mem *mem, int index);
 void stats_display_sys(struct stats_sys *sys);
 #else /* LWIP_STATS_DISPLAY */

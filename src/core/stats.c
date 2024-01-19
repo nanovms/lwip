@@ -61,7 +61,7 @@ stats_init(void)
 
 #if LWIP_STATS_DISPLAY
 void
-stats_display_proto(struct stats_proto *proto, const char *name)
+stats_display_proto(struct stats_proto *proto, sstring name)
 {
   LWIP_PLATFORM_DIAG(("\n%s\n\t", name));
   LWIP_PLATFORM_DIAG(("xmit: %"STAT_COUNTER_F"\n\t", proto->xmit));
@@ -80,7 +80,7 @@ stats_display_proto(struct stats_proto *proto, const char *name)
 
 #if IGMP_STATS || MLD6_STATS
 void
-stats_display_igmp(struct stats_igmp *igmp, const char *name)
+stats_display_igmp(struct stats_igmp *igmp, sstring name)
 {
   LWIP_PLATFORM_DIAG(("\n%s\n\t", name));
   LWIP_PLATFORM_DIAG(("xmit: %"STAT_COUNTER_F"\n\t", igmp->xmit));
@@ -102,7 +102,7 @@ stats_display_igmp(struct stats_igmp *igmp, const char *name)
 
 #if MEM_STATS || MEMP_STATS
 void
-stats_display_mem(struct stats_mem *mem, const char *name)
+stats_display_mem(struct stats_mem *mem, sstring name)
 {
   LWIP_PLATFORM_DIAG(("\nMEM %s\n\t", name));
   LWIP_PLATFORM_DIAG(("avail: %"MEM_SIZE_F"\n\t", mem->avail));

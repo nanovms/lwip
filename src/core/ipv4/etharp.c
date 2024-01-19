@@ -215,7 +215,8 @@ etharp_tmr(void)
            (arp_table[i].ctime >= ARP_MAXPENDING))) {
         /* pending or stable entry has become old! */
         LWIP_DEBUGF(ETHARP_DEBUG, ("etharp_timer: expired %s entry %d.\n",
-                                   arp_table[i].state >= ETHARP_STATE_STABLE ? "stable" : "pending", i));
+                                   arp_table[i].state >= ETHARP_STATE_STABLE ? ss("stable") : ss("pending"),
+                                   i));
         /* clean up entries that have just been expired */
         etharp_free_entry(i);
       } else if (arp_table[i].state == ETHARP_STATE_STABLE_REREQUESTING_1) {

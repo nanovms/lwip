@@ -94,7 +94,7 @@
  * @param descr2 description of the element source shown on error
  */
 void
-mem_overflow_check_raw(void *p, size_t size, const char *descr1, const char *descr2)
+mem_overflow_check_raw(void *p, size_t size, sstring descr1, sstring descr2)
 {
 #if MEM_SANITY_REGION_AFTER_ALIGNED || MEM_SANITY_REGION_BEFORE_ALIGNED
   u16_t k;

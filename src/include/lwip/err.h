@@ -101,9 +101,9 @@ typedef s8_t err_t;
  */
 
 #ifdef LWIP_DEBUG
-extern const char *lwip_strerr(err_t err);
+extern sstring lwip_strerr(err_t err);
 #else
-#define lwip_strerr(x) ""
+#define lwip_strerr(x) sstring_empty()
 #endif /* LWIP_DEBUG */
 
 #if !NO_SYS

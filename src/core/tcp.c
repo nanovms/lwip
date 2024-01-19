@@ -141,18 +141,18 @@
 #define INITIAL_MSS TCP_MSS
 #endif
 
-static const char *const tcp_state_str[] = {
-  "CLOSED",
-  "LISTEN",
-  "SYN_SENT",
-  "SYN_RCVD",
-  "ESTABLISHED",
-  "FIN_WAIT_1",
-  "FIN_WAIT_2",
-  "CLOSE_WAIT",
-  "CLOSING",
-  "LAST_ACK",
-  "TIME_WAIT"
+static const sstring tcp_state_str[] = {
+  ss_static_init("CLOSED"),
+  ss_static_init("LISTEN"),
+  ss_static_init("SYN_SENT"),
+  ss_static_init("SYN_RCVD"),
+  ss_static_init("ESTABLISHED"),
+  ss_static_init("FIN_WAIT_1"),
+  ss_static_init("FIN_WAIT_2"),
+  ss_static_init("CLOSE_WAIT"),
+  ss_static_init("CLOSING"),
+  ss_static_init("LAST_ACK"),
+  ss_static_init("TIME_WAIT")
 };
 
 /* last local TCP port */
@@ -2445,7 +2445,7 @@ tcp_netif_ip_addr_changed(const ip_addr_t *old_addr, const ip_addr_t *new_addr)
   }
 }
 
-const char *
+sstring
 tcp_debug_state_str(enum tcp_state s)
 {
   return tcp_state_str[s];

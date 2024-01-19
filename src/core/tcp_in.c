@@ -1112,7 +1112,7 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
   switch (pcb->state) {
     case SYN_SENT:
       LWIP_DEBUGF(TCP_INPUT_DEBUG, ("SYN-SENT: ackno %"U32_F" pcb->snd_nxt %"U32_F" unacked %s %"U32_F"\n",
-                                    ackno, pcb->snd_nxt, pcb->unacked ? "" : " empty:",
+                                    ackno, pcb->snd_nxt, pcb->unacked ? sstring_empty() : ss(" empty:"),
                                     pcb->unacked ? lwip_ntohl(pcb->unacked->tcphdr->seqno) : 0));
       /* received SYN ACK with expected sequence number? */
       if ((flags & TCP_ACK) && (flags & TCP_SYN)
@@ -1364,7 +1364,7 @@ tcp_oos_insert_segment(struct tcp_seg *cseg, struct tcp_seg *next)
 /** Remove segments from a list if the incoming ACK acknowledges them */
 static struct tcp_seg *
 tcp_free_acked_segments(struct tcp_pcb *pcb, u32_t ackno, tcpwnd_size_t *acked,
-                        struct tcp_seg *seg_list, const char *dbg_list_name,
+                        struct tcp_seg *seg_list, sstring dbg_list_name,
                         struct tcp_seg *dbg_other_seg_list)
 {
   struct tcp_seg *next;
@@ -1564,14 +1564,16 @@ tcp_receive(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
 
       /* Remove segment from the unacknowledged list if the incoming
          ACK acknowledges them. */
-      pcb->unacked = tcp_free_acked_segments(pcb, ackno, &res->acked, pcb->unacked, "unacked", pcb->unsent);
+      pcb->unacked = tcp_free_acked_segments(pcb, ackno, &res->acked, pcb->unacked, ss("unacked"),
+                                             pcb->unsent);
       /* We go through the ->unsent list to see if any of the segments
          on the list are acknowledged by the ACK. This may seem
          strange since an "unsent" segment shouldn't be acked. The
          rationale is that lwIP puts all outstanding segments on the
          ->unsent list after a retransmission, so these segments may
          in fact have been sent once. */
-      pcb->unsent = tcp_free_acked_segments(pcb, ackno, &res->acked, pcb->unsent, "unsent", pcb->unacked);
+      pcb->unsent = tcp_free_acked_segments(pcb, ackno, &res->acked, pcb->unsent, ss("unsent"),
+                                            pcb->unacked);
 
       /* If there's nothing left to acknowledge, stop the retransmit
          timer, otherwise reset it to start again */

@@ -278,7 +278,8 @@ igmp_lookup_group(struct netif *ifp, const ip4_addr_t *addr)
     }
   }
 
-  LWIP_DEBUGF(IGMP_DEBUG, ("igmp_lookup_group: %sallocated a new group with address ", (group ? "" : "impossible to ")));
+  LWIP_DEBUGF(IGMP_DEBUG, ("igmp_lookup_group: %sallocated a new group with address ",
+                           (group ? sstring_empty() : ss("impossible to "))));
   ip4_addr_debug_print(IGMP_DEBUG, addr);
   LWIP_DEBUGF(IGMP_DEBUG, (" on if %p\n", (void *)ifp));
 

@@ -68,10 +68,9 @@ const ip_addr_t ip6_addr_any = IPADDR6_INIT(0ul, 0ul, 0ul, 0ul);
  * @return 1 if cp could be converted to addr, 0 on failure
  */
 int
-ip6addr_aton(const char *cp, ip6_addr_t *addr)
+ip6addr_aton(sstring cp, ip6_addr_t *addr)
 {
   u32_t addr_index, zero_blocks, current_block_index, current_block_value;
-  const char *s;
 #if LWIP_IPV4
   int check_ipv4_mapped = 0;
 #endif /* LWIP_IPV4 */
@@ -79,7 +78,9 @@ ip6addr_aton(const char *cp, ip6_addr_t *addr)
   /* Count the number of colons, to count the number of blocks in a "::" sequence
      zero_blocks may be 1 even if there are no :: sequences */
   zero_blocks = 8;
-  for (s = cp; *s != 0; s++) {
+  for (size_t i = 0; i < cp.len; i++) {
+    const char *s = cp.ptr + i;
+
     if (*s == ':') {
       zero_blocks--;
 #if LWIP_IPV4
@@ -103,7 +104,9 @@ ip6addr_aton(const char *cp, ip6_addr_t *addr)
   addr_index = 0;
   current_block_index = 0;
   current_block_value = 0;
-  for (s = cp; *s != 0; s++) {
+  for (size_t i = 0; i < cp.len; i++) {
+    char *s = cp.ptr + i;
+
     if (*s == ':') {
       if (addr) {
         if (current_block_index & 0x1) {
@@ -118,7 +121,7 @@ ip6addr_aton(const char *cp, ip6_addr_t *addr)
       if (check_ipv4_mapped) {
         if (current_block_index == 6) {
           ip4_addr_t ip4;
-          int ret = ip4addr_aton(s + 1, &ip4);
+          int ret = ip4addr_aton(isstring(s + 1, cp.len - i - 1), &ip4);
           if (ret) {
             if (addr) {
               addr->addr[3] = lwip_htonl(ip4.addr);
@@ -135,12 +138,12 @@ ip6addr_aton(const char *cp, ip6_addr_t *addr)
         /* address too long! */
         return 0;
       }
-      if (s[1] == ':') {
-        if (s[2] == ':') {
+      if ((i + i < cp.len) && (s[1] == ':')) {
+        if ((i + 2 < cp.len) && (s[2] == ':')) {
           /* invalid format: three successive colons */
           return 0;
         }
-        s++;
+        s = cp.ptr + ++i;
         /* "::" found, set zeros */
         while (zero_blocks > 0) {
           zero_blocks--;
@@ -195,30 +198,15 @@ fix_byte_order_and_return:
 }
 
 /**
- * Convert numeric IPv6 address into ASCII representation.
- * returns ptr to static buffer; not reentrant!
- *
- * @param addr ip6 address in network order to convert
- * @return pointer to a global static (!) buffer that holds the ASCII
- *         representation of addr
- */
-char *
-ip6addr_ntoa(const ip6_addr_t *addr)
-{
-  static char str[40];
-  return ip6addr_ntoa_r(addr, str, 40);
-}
-
-/**
  * Same as ipaddr_ntoa, but reentrant since a user-supplied buffer is used.
  *
  * @param addr ip6 address in network order to convert
  * @param buf target buffer where the string is stored
  * @param buflen length of buf
- * @return either pointer to buf which now holds the ASCII
- *         representation of addr or NULL if buf was too small
+ * @return either the string length of the ASCII
+ *         representation of addr or 0 if buf was too small
  */
-char *
+int
 ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
 {
   u32_t current_block_index, current_block_value, next_block_value;
@@ -229,20 +217,20 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
   if (ip6_addr_isipv4mappedipv6(addr)) {
     /* This is an IPv4 mapped address */
     ip4_addr_t addr4;
-    char *ret;
+    int ret;
 #define IP4MAPPED_HEADER "::FFFF:"
     char *buf_ip4 = buf + sizeof(IP4MAPPED_HEADER) - 1;
     int buflen_ip4 = buflen - sizeof(IP4MAPPED_HEADER) + 1;
     if (buflen < (int)sizeof(IP4MAPPED_HEADER)) {
-      return NULL;
+      return 0;
     }
     memcpy(buf, IP4MAPPED_HEADER, sizeof(IP4MAPPED_HEADER));
     addr4.addr = addr->addr[3];
     ret = ip4addr_ntoa_r(&addr4, buf_ip4, buflen_ip4);
-    if (ret != buf_ip4) {
-      return NULL;
+    if (ret == 0) {
+      return 0;
     }
-    return buf;
+    return (buf_ip4 - buf + ret);
   }
 #endif /* LWIP_IPV4 */
   i = 0;
@@ -262,7 +250,7 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
         /* special case, we must render a ':' for the last block. */
         buf[i++] = ':';
         if (i >= buflen) {
-          return NULL;
+          return 0;
         }
         break;
       }
@@ -278,7 +266,7 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
           empty_block_flag = 1;
           buf[i++] = ':';
           if (i >= buflen) {
-            return NULL;
+            return 0;
           }
           continue; /* move on to next block. */
         }
@@ -294,7 +282,7 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
     if (current_block_index > 0) {
       buf[i++] = ':';
       if (i >= buflen) {
-        return NULL;
+        return 0;
       }
     }
 
@@ -304,7 +292,7 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
       buf[i++] = lwip_xchar(((current_block_value & 0xf000) >> 12));
       zero_flag = 0;
       if (i >= buflen) {
-        return NULL;
+        return 0;
       }
     }
 
@@ -314,7 +302,7 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
       buf[i++] = lwip_xchar(((current_block_value & 0xf00) >> 8));
       zero_flag = 0;
       if (i >= buflen) {
-        return NULL;
+        return 0;
       }
     }
 
@@ -325,19 +313,17 @@ ip6addr_ntoa_r(const ip6_addr_t *addr, char *buf, int buflen)
       buf[i++] = lwip_xchar(((current_block_value & 0xf0) >> 4));
       zero_flag = 0;
       if (i >= buflen) {
-        return NULL;
+        return 0;
       }
     }
 
     buf[i++] = lwip_xchar((current_block_value & 0xf));
     if (i >= buflen) {
-      return NULL;
+      return 0;
     }
   }
 
-  buf[i] = 0;
-
-  return buf;
+  return i;
 }
 
 #endif /* LWIP_IPV6 */

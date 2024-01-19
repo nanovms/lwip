@@ -335,7 +335,7 @@ pbuf_alloc_reference(void *payload, u16_t length, pbuf_type type)
   if (p == NULL) {
     LWIP_DEBUGF(PBUF_DEBUG | LWIP_DBG_LEVEL_SERIOUS,
                 ("pbuf_alloc_reference: Could not allocate MEMP_PBUF for PBUF_%s.\n",
-                 (type == PBUF_ROM) ? "ROM" : "REF"));
+                 (type == PBUF_ROM) ? ss("ROM") : ss("REF")));
     return NULL;
   }
   pbuf_init_alloced_pbuf(p, payload, length, length, type, 0);
@@ -1482,29 +1482,4 @@ pbuf_memfind(const struct pbuf *p, const void *mem, u16_t mem_len, u16_t start_o
     }
   }
   return 0xFFFF;
-}
-
-/**
- * Find occurrence of substr with length substr_len in pbuf p, start at offset
- * start_offset
- * WARNING: in contrast to strstr(), this one does not stop at the first \0 in
- * the pbuf/source string!
- *
- * @param p pbuf to search, maximum length is 0xFFFE since 0xFFFF is used as
- *        return value 'not found'
- * @param substr string to search for in p, maximum length is 0xFFFE
- * @return 0xFFFF if substr was not found in p or the index where it was found
- */
-u16_t
-pbuf_strstr(const struct pbuf *p, const char *substr)
-{
-  size_t substr_len;
-  if ((substr == NULL) || (substr[0] == 0) || (p->tot_len == 0xFFFF)) {
-    return 0xFFFF;
-  }
-  substr_len = strlen(substr);
-  if (substr_len >= 0xFFFF) {
-    return 0xFFFF;
-  }
-  return pbuf_memfind(p, substr, (u16_t)substr_len, 0);
 }

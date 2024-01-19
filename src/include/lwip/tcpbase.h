@@ -77,7 +77,7 @@ enum tcp_state {
 #define TCP_PRIO_NORMAL 64
 #define TCP_PRIO_MAX    127
 
-const char* tcp_debug_state_str(enum tcp_state s);
+sstring tcp_debug_state_str(enum tcp_state s);
 
 #ifdef __cplusplus
 }

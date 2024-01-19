@@ -138,7 +138,7 @@ int   lwip_strnicmp(const char* str1, const char* str2, size_t len);
 #endif
 #ifndef lwip_stricmp
 /* This can be #defined to stricmp() or strcasecmp() depending on your platform */
-int   lwip_stricmp(const char* str1, const char* str2);
+int   lwip_stricmp(sstring str1, sstring str2);
 #endif
 #ifndef lwip_strnstr
 /* This can be #defined to strnstr() depending on your platform */

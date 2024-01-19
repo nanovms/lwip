@@ -1504,11 +1504,11 @@ dhcp_option_long(u16_t options_out_len, u8_t *options, u32_t value)
 static u16_t
 dhcp_option_hostname(u16_t options_out_len, u8_t *options, struct netif *netif)
 {
-  if (netif->hostname != NULL) {
-    size_t namelen = strlen(netif->hostname);
+  if (!sstring_is_null(netif->hostname)) {
+    size_t namelen = netif->hostname.len;
     if (namelen > 0) {
       size_t len;
-      const char *p = netif->hostname;
+      const char *p = netif->hostname.ptr;
       /* Shrink len to available bytes (need 2 bytes for OPTION_HOSTNAME
          and 1 byte for trailer) */
       size_t available = DHCP_OPTIONS_LEN - options_out_len - 3;

@@ -62,7 +62,7 @@
 #include "lwip/pbuf.h"
 
 #if LWIP_DEBUG_TIMERNAMES
-#define HANDLER(x) x, #x
+#define HANDLER(x) x, ss_static_init(#x)
 #else /* LWIP_DEBUG_TIMERNAMES */
 #define HANDLER(x) x
 #endif /* LWIP_DEBUG_TIMERNAMES */
@@ -178,7 +178,7 @@ tcp_timer_needed(void)
 
 static void
 #if LWIP_DEBUG_TIMERNAMES
-sys_timeout_abs(u32_t abs_time, sys_timeout_handler handler, void *arg, const char *handler_name)
+sys_timeout_abs(u32_t abs_time, sys_timeout_handler handler, void *arg, sstring handler_name)
 #else /* LWIP_DEBUG_TIMERNAMES */
 sys_timeout_abs(u32_t abs_time, sys_timeout_handler handler, void *arg)
 #endif

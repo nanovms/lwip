@@ -120,7 +120,7 @@ ip4_addr_netmask_valid(u32_t netmask)
  * @return ip address in network order
  */
 u32_t
-ipaddr_addr(const char *cp)
+ipaddr_addr(sstring cp)
 {
   ip4_addr_t val;
 
@@ -142,16 +142,17 @@ ipaddr_addr(const char *cp)
  * @return 1 if cp could be converted to addr, 0 on failure
  */
 int
-ip4addr_aton(const char *cp, ip4_addr_t *addr)
+ip4addr_aton(sstring cp, ip4_addr_t *addr)
 {
   u32_t val;
   u8_t base;
-  char c;
+  size_t i;
   u32_t parts[4];
   u32_t *pp = parts;
 
-  c = *cp;
-  for (;;) {
+  val = 0;
+  for (i = 0; i < cp.len; i++) {
+    char c = cp.ptr[i];
     /*
      * Collect number up to ``.''.
      * Values are specified as for C:
@@ -162,22 +163,21 @@ ip4addr_aton(const char *cp, ip4_addr_t *addr)
     }
     val = 0;
     base = 10;
-    if (c == '0') {
-      c = *++cp;
+    if ((c == '0') && (++i < cp.len)) {
+      c = cp.ptr[i];
       if (c == 'x' || c == 'X') {
         base = 16;
-        c = *++cp;
+        ++i;
       } else {
         base = 8;
       }
     }
-    for (;;) {
+    for (; i < cp.len; i++) {
+      c = cp.ptr[i];
       if (lwip_isdigit(c)) {
         val = (val * base) + (u32_t)(c - '0');
-        c = *++cp;
       } else if (base == 16 && lwip_isxdigit(c)) {
         val = (val << 4) | (u32_t)(c + 10 - (lwip_islower(c) ? 'a' : 'A'));
-        c = *++cp;
       } else {
         break;
       }
@@ -193,7 +193,6 @@ ip4addr_aton(const char *cp, ip4_addr_t *addr)
         return 0;
       }
       *pp++ = val;
-      c = *++cp;
     } else {
       break;
     }
@@ -201,7 +200,7 @@ ip4addr_aton(const char *cp, ip4_addr_t *addr)
   /*
    * Check for trailing characters.
    */
-  if (c != '\0' && !lwip_isspace(c)) {
+  if ((i < cp.len) && !lwip_isspace(cp.ptr[i])) {
     return 0;
   }
   /*
@@ -256,30 +255,15 @@ ip4addr_aton(const char *cp, ip4_addr_t *addr)
 }
 
 /**
- * Convert numeric IP address into decimal dotted ASCII representation.
- * returns ptr to static buffer; not reentrant!
- *
- * @param addr ip address in network order to convert
- * @return pointer to a global static (!) buffer that holds the ASCII
- *         representation of addr
- */
-char *
-ip4addr_ntoa(const ip4_addr_t *addr)
-{
-  static char str[IP4ADDR_STRLEN_MAX];
-  return ip4addr_ntoa_r(addr, str, IP4ADDR_STRLEN_MAX);
-}
-
-/**
  * Same as ip4addr_ntoa, but reentrant since a user-supplied buffer is used.
  *
  * @param addr ip address in network order to convert
  * @param buf target buffer where the string is stored
  * @param buflen length of buf
- * @return either pointer to buf which now holds the ASCII
- *         representation of addr or NULL if buf was too small
+ * @return either the string length of the ASCII
+ *         representation of addr or 0 if buf was too small
  */
-char *
+int
 ip4addr_ntoa_r(const ip4_addr_t *addr, char *buf, int buflen)
 {
   u32_t s_addr;
@@ -304,18 +288,17 @@ ip4addr_ntoa_r(const ip4_addr_t *addr, char *buf, int buflen)
     } while (*ap);
     while (i--) {
       if (len++ >= buflen) {
-        return NULL;
+        return 0;
       }
       *rp++ = inv[i];
     }
     if (len++ >= buflen) {
-      return NULL;
+      return 0;
     }
     *rp++ = '.';
     ap++;
   }
-  *--rp = 0;
-  return buf;
+  return (rp - 1 - buf);
 }
 
 #endif /* LWIP_IPV4 */

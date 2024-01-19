@@ -95,29 +95,6 @@ lwip_htonl(u32_t n)
 
 #endif /* BYTE_ORDER == LITTLE_ENDIAN */
 
-#ifndef lwip_strnstr
-/**
- * @ingroup sys_nonstandard
- * lwIP default implementation for strnstr() non-standard function.
- * This can be \#defined to strnstr() depending on your platform port.
- */
-char *
-lwip_strnstr(const char *buffer, const char *token, size_t n)
-{
-  const char *p;
-  size_t tokenlen = strlen(token);
-  if (tokenlen == 0) {
-    return LWIP_CONST_CAST(char *, buffer);
-  }
-  for (p = buffer; *p && (p + tokenlen <= buffer + n); p++) {
-    if ((*p == *token) && (strncmp(p, token, tokenlen) == 0)) {
-      return LWIP_CONST_CAST(char *, p);
-    }
-  }
-  return NULL;
-}
-#endif
-
 #ifndef lwip_stricmp
 /**
  * @ingroup sys_nonstandard
@@ -125,13 +102,16 @@ lwip_strnstr(const char *buffer, const char *token, size_t n)
  * This can be \#defined to stricmp() depending on your platform port.
  */
 int
-lwip_stricmp(const char *str1, const char *str2)
+lwip_stricmp(sstring str1, sstring str2)
 {
   char c1, c2;
+  size_t len = str1.len;
 
-  do {
-    c1 = *str1++;
-    c2 = *str2++;
+  if (len != str2.len)
+      return (len - str2.len);
+  while (len--) {
+    c1 = *str1.ptr++;
+    c2 = *str2.ptr++;
     if (c1 != c2) {
       char c1_upc = c1 | 0x20;
       if ((c1_upc >= 'a') && (c1_upc <= 'z')) {
@@ -148,7 +128,7 @@ lwip_stricmp(const char *str1, const char *str2)
         return 1;
       }
     }
-  } while (c1 != 0);
+  };
   return 0;
 }
 #endif

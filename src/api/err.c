@@ -77,24 +77,24 @@ err_to_errno(err_t err)
 
 #ifdef LWIP_DEBUG
 
-static const char *err_strerr[] = {
-  "Ok.",                    /* ERR_OK          0  */
-  "Out of memory error.",   /* ERR_MEM        -1  */
-  "Buffer error.",          /* ERR_BUF        -2  */
-  "Timeout.",               /* ERR_TIMEOUT    -3  */
-  "Routing problem.",       /* ERR_RTE        -4  */
-  "Operation in progress.", /* ERR_INPROGRESS -5  */
-  "Illegal value.",         /* ERR_VAL        -6  */
-  "Operation would block.", /* ERR_WOULDBLOCK -7  */
-  "Address in use.",        /* ERR_USE        -8  */
-  "Already connecting.",    /* ERR_ALREADY    -9  */
-  "Already connected.",     /* ERR_ISCONN     -10 */
-  "Not connected.",         /* ERR_CONN       -11 */
-  "Low-level netif error.", /* ERR_IF         -12 */
-  "Connection aborted.",    /* ERR_ABRT       -13 */
-  "Connection reset.",      /* ERR_RST        -14 */
-  "Connection closed.",     /* ERR_CLSD       -15 */
-  "Illegal argument."       /* ERR_ARG        -16 */
+static const sstring err_strerr[] = {
+  ss_static_init("Ok."),                    /* ERR_OK          0  */
+  ss_static_init("Out of memory error."),   /* ERR_MEM        -1  */
+  ss_static_init("Buffer error."),          /* ERR_BUF        -2  */
+  ss_static_init("Timeout."),               /* ERR_TIMEOUT    -3  */
+  ss_static_init("Routing problem."),       /* ERR_RTE        -4  */
+  ss_static_init("Operation in progress."), /* ERR_INPROGRESS -5  */
+  ss_static_init("Illegal value."),         /* ERR_VAL        -6  */
+  ss_static_init("Operation would block."), /* ERR_WOULDBLOCK -7  */
+  ss_static_init("Address in use."),        /* ERR_USE        -8  */
+  ss_static_init("Already connecting."),    /* ERR_ALREADY    -9  */
+  ss_static_init("Already connected."),     /* ERR_ISCONN     -10 */
+  ss_static_init("Not connected."),         /* ERR_CONN       -11 */
+  ss_static_init("Low-level netif error."), /* ERR_IF         -12 */
+  ss_static_init("Connection aborted."),    /* ERR_ABRT       -13 */
+  ss_static_init("Connection reset."),      /* ERR_RST        -14 */
+  ss_static_init("Connection closed."),     /* ERR_CLSD       -15 */
+  ss_static_init("Illegal argument."),      /* ERR_ARG        -16 */
 };
 
 /**
@@ -103,11 +103,11 @@ static const char *err_strerr[] = {
  * @param err an lwip internal err_t
  * @return a string representation for err
  */
-const char *
+sstring
 lwip_strerr(err_t err)
 {
   if ((err > 0) || (-err >= (err_t)LWIP_ARRAYSIZE(err_strerr))) {
-    return "Unknown error.";
+    return ss("Unknown error.");
   }
   return err_strerr[-err];
 }

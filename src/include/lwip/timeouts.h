@@ -71,7 +71,7 @@ struct lwip_cyclic_timer {
   u32_t interval_ms;
   lwip_cyclic_timer_handler handler;
 #if LWIP_DEBUG_TIMERNAMES
-  const char* handler_name;
+  sstring handler_name;
 #endif /* LWIP_DEBUG_TIMERNAMES */
 };
 
@@ -96,7 +96,7 @@ struct sys_timeo {
   sys_timeout_handler h;
   void *arg;
 #if LWIP_DEBUG_TIMERNAMES
-  const char* handler_name;
+  sstring handler_name;
 #endif /* LWIP_DEBUG_TIMERNAMES */
 };
 

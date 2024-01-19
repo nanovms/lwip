@@ -1414,9 +1414,13 @@ netif_ip6_addr_set_parts(struct netif *netif, s8_t addr_idx, u32_t i0, u32_t i1,
 #endif
   }
 
+#ifdef LWIP_DEBUG
+  char addr[IP6ADDR_STRLEN_MAX];
   LWIP_DEBUGF(NETIF_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("netif: IPv6 address %d of interface %c%c set to %s/0x%"X8_F"\n",
-              addr_idx, netif->name[0], netif->name[1], ip6addr_ntoa(netif_ip6_addr(netif, addr_idx)),
+              addr_idx, netif->name[0], netif->name[1],
+              isstring(addr, ip6addr_ntoa_r(netif_ip6_addr(netif, addr_idx), addr, sizeof(addr))),
               netif_ip6_addr_state(netif, addr_idx)));
+#endif
 }
 
 /**
@@ -1481,9 +1485,13 @@ netif_ip6_addr_set_state(struct netif *netif, s8_t addr_idx, u8_t state)
     }
 #endif
   }
+#ifdef LWIP_DEBUG
+  char addr[IP6ADDR_STRLEN_MAX];
   LWIP_DEBUGF(NETIF_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_STATE, ("netif: IPv6 address %d of interface %c%c set to %s/0x%"X8_F"\n",
-              addr_idx, netif->name[0], netif->name[1], ip6addr_ntoa(netif_ip6_addr(netif, addr_idx)),
+              addr_idx, netif->name[0], netif->name[1],
+              isstring(addr, ip6addr_ntoa_r(netif_ip6_addr(netif, addr_idx), addr, sizeof(addr))),
               netif_ip6_addr_state(netif, addr_idx)));
+#endif
 }
 
 /**
@@ -1668,27 +1676,6 @@ netif_null_output_ip4(struct netif *netif, struct pbuf *p, const ip4_addr_t *ipa
 
 /**
 * @ingroup netif
-* Return the interface index for the netif with name
-* or NETIF_NO_INDEX if not found/on error
-*
-* @param name the name of the netif
-*/
-u8_t
-netif_name_to_index(const char *name)
-{
-  struct netif *netif = netif_find(name);
-  if (netif != NULL) {
-    u8_t index = netif_get_index(netif);
-
-    netif_unref(netif);
-    return index;
-  }
-  /* No name found, return invalid index */
-  return NETIF_NO_INDEX;
-}
-
-/**
-* @ingroup netif
 * Return the interface name for the netif matching index
 * or NULL if not found/on error
 *
@@ -1746,30 +1733,30 @@ netif_get_by_index(u8_t idx)
  * in ascii representation (e.g. 'en0')
  */
 struct netif *
-netif_find(const char *name)
+netif_find(sstring name)
 {
   struct netif *netif;
   u8_t num;
 
   LWIP_ASSERT_CORE_LOCKED();
 
-  if (name == NULL) {
+  if (name.len < 3) {
     return NULL;
   }
 
-  num = (u8_t)atoi(&name[2]);
+  num = (u8_t)atoi(isstring(name.ptr + 2, name.len - 2));
 
   SYS_ARCH_LOCK(&netif_mutex);
   NETIF_FOREACH(netif) {
     if (num == netif->num &&
-        name[0] == netif->name[0] &&
-        name[1] == netif->name[1]) {
-      LWIP_DEBUGF(NETIF_DEBUG, ("netif_find: found %c%c\n", name[0], name[1]));
+        name.ptr[0] == netif->name[0] &&
+        name.ptr[1] == netif->name[1]) {
+      LWIP_DEBUGF(NETIF_DEBUG, ("netif_find: found %c%c\n", name.ptr[0], name.ptr[1]));
       netif_ref(netif);
       goto out;
     }
   }
-  LWIP_DEBUGF(NETIF_DEBUG, ("netif_find: didn't find %c%c\n", name[0], name[1]));
+  LWIP_DEBUGF(NETIF_DEBUG, ("netif_find: didn't find %c%c\n", name.ptr[0], name.ptr[1]));
 out:
   SYS_ARCH_UNLOCK(&netif_mutex);
   return netif;

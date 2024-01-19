@@ -325,8 +325,8 @@ struct netif {
   void* client_data[LWIP_NETIF_CLIENT_DATA_INDEX_MAX + LWIP_NUM_NETIF_CLIENT_DATA];
 #endif
 #if LWIP_NETIF_HOSTNAME
-  /* the hostname for this netif, NULL is a valid value */
-  const char*  hostname;
+  /* the hostname for this netif, an empty string is a valid value */
+  sstring hostname;
 #endif /* LWIP_NETIF_HOSTNAME */
 #if LWIP_CHECKSUM_CTRL_PER_NETIF
   u16_t chksum_flags;
@@ -419,7 +419,7 @@ void netif_remove(struct netif * netif);
    "et0", where the first two letters are the "name" field in the
    netif structure, and the digit is in the num field in the same
    structure. */
-struct netif *netif_find(const char *name);
+struct netif *netif_find(sstring name);
 
 void netif_iterate(u8_t (*handler)(struct netif *n, void *priv), void *priv);
 
