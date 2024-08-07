@@ -42,6 +42,7 @@
 #include "lwip/opt.h"
 
 #include "lwip/timeouts.h"
+#include "lwip/priv/mld6_priv.h"
 #include "lwip/priv/tcp_priv.h"
 
 #include "lwip/def.h"
@@ -106,9 +107,6 @@ const struct lwip_cyclic_timer lwip_cyclic_timers[] = {
 #if LWIP_IPV6_REASS
   {IP6_REASS_TMR_INTERVAL, HANDLER(ip6_reass_tmr)},
 #endif /* LWIP_IPV6_REASS */
-#if LWIP_IPV6_MLD
-  {MLD6_TMR_INTERVAL, HANDLER(mld6_tmr)},
-#endif /* LWIP_IPV6_MLD */
 #if LWIP_IPV6_DHCP6
   {DHCP6_TIMER_MSECS, HANDLER(dhcp6_tmr)},
 #endif /* LWIP_IPV6_DHCP6 */
@@ -175,6 +173,32 @@ tcp_timer_needed(void)
   }
 }
 #endif /* LWIP_TCP */
+
+#if LWIP_IPV6_MLD
+static int mld6_timer_active;
+
+static void
+mld6_timer(void *arg)
+{
+  LWIP_UNUSED_ARG(arg);
+
+  mld6_tmr();
+  if (mld6_timer_is_needed()) {
+    sys_timeout(MLD6_TMR_INTERVAL, mld6_timer, NULL);
+  } else {
+    mld6_timer_active = 0;
+  }
+}
+
+void
+mld6_timer_needed(void)
+{
+  if (!mld6_timer_active) {
+    mld6_timer_active = 1;
+    sys_timeout(MLD6_TMR_INTERVAL, mld6_timer, NULL);
+  }
+}
+#endif
 
 static void
 #if LWIP_DEBUG_TIMERNAMES

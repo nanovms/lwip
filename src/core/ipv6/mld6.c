@@ -56,6 +56,7 @@
 #if LWIP_IPV6 && LWIP_IPV6_MLD  /* don't build if not configured for use in lwipopts.h */
 
 #include "lwip/mld6.h"
+#include "lwip/priv/mld6_priv.h"
 #include "lwip/prot/mld6.h"
 #include "lwip/icmp6.h"
 #include "lwip/ip6.h"
@@ -606,6 +607,7 @@ mld6_delayed_report(struct mld_group *group, u16_t maxresp_in)
       ((group->timer == 0) || (maxresp < group->timer)))) {
     group->timer = maxresp;
     group->group_state = MLD6_GROUP_DELAYING_MEMBER;
+    mld6_timer_needed();
   }
 }
 
@@ -680,6 +682,30 @@ mld6_send(struct netif *netif, struct mld_group *group, u8_t type)
   ip6_output_if(p, (ip6_addr_isany(src_addr)) ? NULL : src_addr, &(group->group_address),
       MLD6_HL, 0, IP6_NEXTH_HOPBYHOP, netif);
   pbuf_free(p);
+}
+
+static u8_t mld6_tmr_needed_netif(struct netif *netif, void *priv)
+{
+  u8_t *needed = (u8_t *)priv;
+  SYS_ARCH_LOCK(&mld6_mutex);
+  struct mld_group *group = netif_mld6_data(netif);
+
+  while (group != NULL) {
+    if (group->timer > 0) {
+      *needed = true;
+      break;
+    }
+    group = group->next;
+  }
+  SYS_ARCH_UNLOCK(&mld6_mutex);
+  return *needed;
+}
+
+u8_t mld6_timer_is_needed(void)
+{
+  u8_t needed = false;
+  netif_iterate(mld6_tmr_needed_netif, &needed);
+  return needed;
 }
 
 #endif /* LWIP_IPV6 */
