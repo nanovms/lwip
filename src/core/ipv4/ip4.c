@@ -839,6 +839,7 @@ out:
  * @param ttl the TTL value to be set in the IP header
  * @param tos the TOS value to be set in the IP header
  * @param proto the PROTOCOL to be set in the IP header
+ * @param df whether the DONT_FRAGMENT flag should be set in the IP header
  * @param netif the netif on which to send this packet
  * @return ERR_OK if the packet was sent OK
  *         ERR_BUF if p doesn't have enough space for IP/LINK headers
@@ -850,10 +851,10 @@ out:
 err_t
 ip4_output_if(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
               u8_t ttl, u8_t tos,
-              u8_t proto, struct netif *netif)
+              u8_t proto, boolean df, struct netif *netif)
 {
 #if IP_OPTIONS_SEND
-  return ip4_output_if_opt(p, src, dest, ttl, tos, proto, netif, NULL, 0);
+  return ip4_output_if_opt(p, src, dest, ttl, tos, proto, df, netif, NULL, 0);
 }
 
 /**
@@ -864,7 +865,7 @@ ip4_output_if(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
  */
 err_t
 ip4_output_if_opt(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
-                  u8_t ttl, u8_t tos, u8_t proto, struct netif *netif, void *ip_options,
+                  u8_t ttl, u8_t tos, u8_t proto, boolean df, struct netif *netif, void *ip_options,
                   u16_t optlen)
 {
 #endif /* IP_OPTIONS_SEND */
@@ -876,10 +877,10 @@ ip4_output_if_opt(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
   }
 
 #if IP_OPTIONS_SEND
-  return ip4_output_if_opt_src(p, src_used, dest, ttl, tos, proto, netif,
+  return ip4_output_if_opt_src(p, src_used, dest, ttl, tos, proto, df, netif,
                                ip_options, optlen);
 #else /* IP_OPTIONS_SEND */
-  return ip4_output_if_src(p, src_used, dest, ttl, tos, proto, netif);
+  return ip4_output_if_src(p, src_used, dest, ttl, tos, proto, df, netif);
 #endif /* IP_OPTIONS_SEND */
 }
 
@@ -890,10 +891,10 @@ ip4_output_if_opt(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
 err_t
 ip4_output_if_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
                   u8_t ttl, u8_t tos,
-                  u8_t proto, struct netif *netif)
+                  u8_t proto, boolean df, struct netif *netif)
 {
 #if IP_OPTIONS_SEND
-  return ip4_output_if_opt_src(p, src, dest, ttl, tos, proto, netif, NULL, 0);
+  return ip4_output_if_opt_src(p, src, dest, ttl, tos, proto, df, netif, NULL, 0);
 }
 
 /**
@@ -902,8 +903,8 @@ ip4_output_if_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
  */
 err_t
 ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
-                      u8_t ttl, u8_t tos, u8_t proto, struct netif *netif, void *ip_options,
-                      u16_t optlen)
+                      u8_t ttl, u8_t tos, u8_t proto, boolean df, struct netif *netif,
+                      void *ip_options, u16_t optlen)
 {
 #endif /* IP_OPTIONS_SEND */
   struct ip_hdr *iphdr;
@@ -990,7 +991,7 @@ ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *d
 #if CHECKSUM_GEN_IP_INLINE
     chk_sum += iphdr->_len;
 #endif /* CHECKSUM_GEN_IP_INLINE */
-    IPH_OFFSET_SET(iphdr, 0);
+    IPH_OFFSET_SET(iphdr, df ? lwip_htons(IP_DF) : 0);
     SYS_ARCH_LOCK(&ip_mutex);
     IPH_ID_SET(iphdr, lwip_htons(ip_id));
     ++ip_id;
@@ -1065,6 +1066,9 @@ ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *d
 #if IP_FRAG
   /* don't fragment if interface has mtu set to 0 [loopif] */
   if (netif->mtu && (p->tot_len > netif->mtu)) {
+    if (df) {
+      return ERR_MSGSIZE;
+    }
     return ip4_frag(p, netif, dest);
   }
 #endif /* IP_FRAG */
@@ -1086,13 +1090,14 @@ ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *d
  * @param ttl the TTL value to be set in the IP header
  * @param tos the TOS value to be set in the IP header
  * @param proto the PROTOCOL to be set in the IP header
+ * @param df whether the DONT_FRAGMENT flag should be set in the IP header
  *
  * @return ERR_RTE if no route is found
  *         see ip_output_if() for more return values
  */
 err_t
 ip4_output(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
-           u8_t ttl, u8_t tos, u8_t proto)
+           u8_t ttl, u8_t tos, u8_t proto, boolean df)
 {
   struct netif *netif;
   err_t err;
@@ -1106,7 +1111,7 @@ ip4_output(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
     return ERR_RTE;
   }
 
-  err = ip4_output_if(p, src, dest, ttl, tos, proto, netif);
+  err = ip4_output_if(p, src, dest, ttl, tos, proto, df, netif);
   netif_unref(netif);
   return err;
 }
@@ -1147,7 +1152,7 @@ ip4_output_hinted(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
   }
 
   NETIF_SET_HINTS(netif, netif_hint);
-  err = ip4_output_if(p, src, dest, ttl, tos, proto, netif);
+  err = ip4_output_if(p, src, dest, ttl, tos, proto, false, netif);
   NETIF_RESET_HINTS(netif);
 
   netif_unref(netif);

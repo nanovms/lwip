@@ -85,6 +85,8 @@ extern "C" {
   u8_t so_options;                         \
   /* Type Of Service */                    \
   u8_t tos;                                \
+  /* path MTU discovery setting */         \
+  u8_t pmtudisc;                           \
   /* Time To Live */                       \
   u8_t ttl                                 \
   /* link layer address resolution hint */ \
@@ -104,6 +106,16 @@ struct ip_pcb {
 
 /* These flags are inherited (e.g. from a listen-pcb to a connection-pcb): */
 #define SOF_INHERITED   (SOF_REUSEADDR|SOF_KEEPALIVE)
+
+/*
+ * Path MTU discovery setting values
+ */
+enum {
+    IP_PMTUDISC_DONT,
+    IP_PMTUDISC_WANT,
+    IP_PMTUDISC_DO,
+    IP_PMTUDISC_PROBE,
+};
 
 /** Global variables of this module, kept in a struct for efficient access using base+index. */
 struct ip_globals
@@ -200,6 +212,9 @@ extern sys_lock_t ip_mutex;
 /** Resets an IP pcb option (SOF_* flags) */
 #define ip_reset_option(pcb, opt) ((pcb)->so_options = (u8_t)((pcb)->so_options & ~(opt)))
 
+#define ip_dont_fragment(pcb)   \
+    (((pcb)->pmtudisc == IP_PMTUDISC_DO) || ((pcb)->pmtudisc == IP_PMTUDISC_PROBE))
+
 #if LWIP_IPV4 && LWIP_IPV6
 /**
  * @ingroup ip
@@ -213,23 +228,23 @@ extern sys_lock_t ip_mutex;
  * @ingroup ip
  * Output IP packet to specified interface
  */
-#define ip_output_if(p, src, dest, ttl, tos, proto, netif) \
+#define ip_output_if(p, src, dest, ttl, tos, proto, df, netif) \
         (IP_IS_V6(dest) ? \
         ip6_output_if(p, ip_2_ip6(src), ip_2_ip6(dest), ttl, tos, proto, netif) : \
-        ip4_output_if(p, ip_2_ip4(src), ip_2_ip4(dest), ttl, tos, proto, netif))
+        ip4_output_if(p, ip_2_ip4(src), ip_2_ip4(dest), ttl, tos, proto, df, netif))
 /**
  * @ingroup ip
  * Output IP packet to interface specifying source address
  */
-#define ip_output_if_src(p, src, dest, ttl, tos, proto, netif) \
+#define ip_output_if_src(p, src, dest, ttl, tos, proto, df, netif) \
         (IP_IS_V6(dest) ? \
         ip6_output_if_src(p, ip_2_ip6(src), ip_2_ip6(dest), ttl, tos, proto, netif) : \
-        ip4_output_if_src(p, ip_2_ip4(src), ip_2_ip4(dest), ttl, tos, proto, netif))
+        ip4_output_if_src(p, ip_2_ip4(src), ip_2_ip4(dest), ttl, tos, proto, df, netif))
 /** Output IP packet that already includes an IP header. */
 #define ip_output_if_hdrincl(p, src, dest, netif) \
         (IP_IS_V6(dest) ? \
         ip6_output_if(p, ip_2_ip6(src), LWIP_IP_HDRINCL, 0, 0, 0, netif) : \
-        ip4_output_if(p, ip_2_ip4(src), LWIP_IP_HDRINCL, 0, 0, 0, netif))
+        ip4_output_if(p, ip_2_ip4(src), LWIP_IP_HDRINCL, 0, 0, 0, false, netif))
 /** Output IP packet with netif_hint */
 #define ip_output_hinted(p, src, dest, ttl, tos, proto, netif_hint) \
         (IP_IS_V6(dest) ? \

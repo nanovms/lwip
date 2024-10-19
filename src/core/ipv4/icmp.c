@@ -248,7 +248,7 @@ icmp_input(struct pbuf *p, struct ip_globals *ip_data)
 
         /* send an ICMP packet */
         ret = ip4_output_if(p, src, LWIP_IP_HDRINCL,
-                            ICMP_TTL, 0, IP_PROTO_ICMP, ip_data->current_input_netif);
+                            ICMP_TTL, 0, IP_PROTO_ICMP, false, ip_data->current_input_netif);
         if (ret != ERR_OK) {
           LWIP_DEBUGF(ICMP_DEBUG, ("icmp_input: ip_output_if returned an error: %s\n", lwip_strerr(ret)));
         }
@@ -396,7 +396,7 @@ icmp_send_response(struct pbuf *p, u8_t type, u8_t code)
     }
 #endif
     ICMP_STATS_INC(icmp.xmit);
-    ip4_output_if(q, NULL, &iphdr_src, ICMP_TTL, 0, IP_PROTO_ICMP, netif);
+    ip4_output_if(q, NULL, &iphdr_src, ICMP_TTL, 0, IP_PROTO_ICMP, false, netif);
     netif_unref(netif);
   }
   pbuf_free(q);

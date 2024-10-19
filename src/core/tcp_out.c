@@ -1602,7 +1602,7 @@ tcp_output_segment(struct tcp_seg *seg, struct tcp_pcb *pcb, struct netif *netif
 
   NETIF_SET_HINTS(netif, &(pcb->netif_hints));
   err = ip_output_if(seg->p, &pcb->local_ip, &pcb->remote_ip, pcb->ttl,
-                     pcb->tos, IP_PROTO_TCP, netif);
+                     pcb->tos, IP_PROTO_TCP, ip_dont_fragment(pcb), netif);
   NETIF_RESET_HINTS(netif);
 
 #if TCP_CHECKSUM_ON_COPY
@@ -1945,7 +1945,7 @@ tcp_output_control_segment(const struct tcp_pcb *pcb, struct pbuf *p,
       tos = 0;
     }
     TCP_STATS_INC(tcp.xmit);
-    err = ip_output_if(p, src, dst, ttl, tos, IP_PROTO_TCP, netif);
+    err = ip_output_if(p, src, dst, ttl, tos, IP_PROTO_TCP, false, netif);
     NETIF_RESET_HINTS(netif);
     netif_unref(netif);
   }
