@@ -815,7 +815,7 @@ dns_send(u8_t idx)
       pbuf_put_at(p, query_idx, n);
       pbuf_take_at(p, hostname_part, copy_len, (u16_t)(query_idx + 1));
       query_idx = (u16_t)(query_idx + n + 1);
-    } while (*hostname != 0);
+    } while (hostname < entry->name + hostname_len);
     pbuf_put_at(p, query_idx, 0);
     query_idx++;
 
