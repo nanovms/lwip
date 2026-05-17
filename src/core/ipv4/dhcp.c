@@ -82,6 +82,10 @@
 
 #include <string.h>
 
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+#include "lwip/ip4_route_table.h"
+#endif
+
 #ifdef LWIP_HOOK_FILENAME
 #include LWIP_HOOK_FILENAME
 #endif
@@ -170,6 +174,10 @@ static u8_t dhcp_discover_request_options[] = {
 #if LWIP_DHCP_GET_NTP_SRV
   , DHCP_OPTION_NTP
 #endif /* LWIP_DHCP_GET_NTP_SRV */
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+  /* request Option 121 (Classless Static Routes) per RFC 3442 */
+  , DHCP_OPTION_CLASSLESS_STATIC_ROUTE
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
 };
 
 #ifdef DHCP_GLOBAL_XID
@@ -188,6 +196,108 @@ static struct udp_pcb *dhcp_pcb;
 static u8_t dhcp_pcb_refcount;
 
 static sys_lock_t dhcp_mutex;
+
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+/* Calculate significant octets for a prefix length: ceil(prefix_len / 8) */
+static u8_t
+prefix_to_octets(u8_t prefix_len)
+{
+  return (prefix_len + 7) / 8;
+}
+
+/**
+ * Parse DHCP Option 121 data and add routes to the static route table.
+ * RFC 3442 variable-length encoding:
+ *   1 byte:  prefix length (0-32)
+ *   N bytes: significant octets of destination (N = ceil(prefix_len/8))
+ *   4 bytes: gateway IP address
+ */
+static int
+dhcp_parse_classless_routes(struct netif *netif, struct pbuf *opts_pbuf,
+                            u16_t offset, u8_t len)
+{
+  int routes_parsed = 0;
+  u16_t pos = offset;
+  u16_t end;
+
+  /* overflow check */
+  if (offset > 0xFFFF - len)
+    return -1;
+  end = offset + len;
+
+  /* empty option is valid but contains no routes */
+  if (len == 0)
+    return 0;
+
+  /* Clear existing DHCP routes for this interface first (lease renewal) */
+  ip4_route_remove_netif(netif, IP4_ROUTE_FLAG_DHCP);
+
+  while (pos < end) {
+    u8_t prefix_len;
+    u8_t significant_octets;
+    ip4_addr_t dest;
+    ip4_addr_t gateway;
+    u8_t dest_bytes[4] = {0, 0, 0, 0};
+
+    /* read prefix length */
+    if (pbuf_copy_partial(opts_pbuf, &prefix_len, 1, pos) != 1)
+      break;
+    pos++;
+
+    if (prefix_len > IP4_MAX_PREFIX_LEN)
+      break;
+
+    significant_octets = prefix_to_octets(prefix_len);
+
+    /* check we have enough data remaining */
+    if (pos + significant_octets + sizeof(gateway.addr) > end)
+      break;
+
+    /* read destination network (significant octets only) */
+    if (significant_octets > 0) {
+      if (pbuf_copy_partial(opts_pbuf, dest_bytes, significant_octets, pos)
+              != significant_octets)
+        break;
+    }
+    pos += significant_octets;
+
+    /*
+     * Reconstruct destination address.
+     * The significant octets are the high-order bytes of the address.
+     * dest_bytes is already zero-initialized for non-significant octets.
+     */
+    dest.addr = (dest_bytes[0] << 24) | (dest_bytes[1] << 16) |
+                (dest_bytes[2] << 8) | dest_bytes[3];
+    dest.addr = lwip_htonl(dest.addr);
+
+    /* apply mask to ensure destination is properly masked (RFC 3442) */
+    dest.addr &= ip4_prefix_to_mask(prefix_len);
+
+    /* read gateway address - already in network byte order */
+    if (pbuf_copy_partial(opts_pbuf, &gateway.addr, sizeof(gateway.addr), pos)
+            != sizeof(gateway.addr))
+      break;
+    pos += sizeof(gateway.addr);
+
+    /*
+     * Validate gateway address:
+     * - Reject multicast/broadcast (invalid as next-hop)
+     * - 0.0.0.0 is valid per RFC 3442: means destination is on-link
+     */
+    if (ip4_addr_ismulticast(&gateway) ||
+        ip4_addr_isbroadcast(&gateway, netif))
+      continue;
+
+    /* add route to table */
+    if (ip4_route_add(&dest, prefix_len, &gateway, netif,
+                      IP4_ROUTE_FLAG_DHCP) == ERR_OK) {
+      routes_parsed++;
+    }
+  }
+
+  return routes_parsed;
+}
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
 
 /* DHCP client state machine functions */
 static err_t dhcp_discover(struct netif *netif);
@@ -287,6 +397,9 @@ dhcp_handle_nak(struct netif *netif)
   dhcp_set_state(dhcp, DHCP_STATE_BACKING_OFF);
   /* remove IP address from interface (must no longer be used, as per RFC2131) */
   netif_set_addr(netif, IP4_ADDR_ANY4, IP4_ADDR_ANY4, IP4_ADDR_ANY4);
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+  ip4_route_remove_netif(netif, IP4_ROUTE_FLAG_DHCP);
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
   /* We can immediately restart discovery */
   dhcp_discover(netif);
 }
@@ -733,7 +846,12 @@ dhcp_handle_ack(struct netif *netif, struct dhcp_msg *msg_in)
   }
 
   /* gateway router */
-  if (dhcp_option_given(dhcp, DHCP_OPTION_IDX_ROUTER)) {
+  if (dhcp_option_given(dhcp, DHCP_OPTION_IDX_ROUTER)
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+      /* RFC 3442: If Option 121 is present, MUST ignore Option 3 (Router) */
+      && !ip4_route_exists(netif, IP4_ROUTE_FLAG_DHCP)
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
+      ) {
     ip4_addr_set_u32(&dhcp->offered_gw_addr, lwip_htonl(dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_ROUTER)));
   }
 
@@ -790,6 +908,10 @@ void dhcp_cleanup(struct netif *netif)
 {
   LWIP_ASSERT_CORE_LOCKED();
   LWIP_ASSERT("netif != NULL", netif != NULL);
+
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+  ip4_route_remove_netif(netif, IP4_ROUTE_FLAG_DHCP);
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
 
   SYS_ARCH_LOCK(&dhcp_mutex);
   if (netif_dhcp_data(netif) != NULL) {
@@ -1149,10 +1271,24 @@ dhcp_bind(struct netif *netif)
   ip4_addr_copy(gw_addr, dhcp->offered_gw_addr);
   /* gateway address not given? */
   if (ip4_addr_isany_val(gw_addr)) {
-    /* copy network address */
-    ip4_addr_get_network(&gw_addr, &dhcp->offered_ip_addr, &sn_mask);
-    /* use first host address on network as gateway */
-    ip4_addr_set_u32(&gw_addr, ip4_addr_get_u32(&gw_addr) | PP_HTONL(0x00000001UL));
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+    /*
+     * RFC 3442: If Option 121 is present, use the gateway from the default
+     * route (0/0) if one was provided. Do not synthesize a gateway — if no
+     * default route was included in Option 121, there must be none.
+     */
+    if (ip4_route_exists(netif, IP4_ROUTE_FLAG_DHCP)) {
+      ip4_addr_t default_dest;
+      ip4_addr_set_zero(&default_dest);
+      ip4_get_gateway(netif, &default_dest, &gw_addr);
+    } else
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
+    {
+      /* copy network address */
+      ip4_addr_get_network(&gw_addr, &dhcp->offered_ip_addr, &sn_mask);
+      /* use first host address on network as gateway */
+      ip4_addr_set_u32(&gw_addr, ip4_addr_get_u32(&gw_addr) | PP_HTONL(0x00000001UL));
+    }
   }
 
 #if LWIP_DHCP_AUTOIP_COOP
@@ -1363,6 +1499,10 @@ dhcp_release_and_stop(struct netif *netif)
     return;
   }
 
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+  ip4_route_remove_netif(netif, IP4_ROUTE_FLAG_DHCP);
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
+
   ip_addr_copy(server_ip_addr, dhcp->server_ip_addr);
 
   /* clean old DHCP offer */
@@ -1536,7 +1676,7 @@ dhcp_option_hostname(u16_t options_out_len, u8_t *options, struct netif *netif)
  *
  */
 static err_t
-dhcp_parse_reply(struct pbuf *p, struct dhcp *dhcp)
+dhcp_parse_reply(struct pbuf *p, struct dhcp *dhcp, struct netif *netif)
 {
   u8_t *options;
   u16_t offset;
@@ -1665,10 +1805,24 @@ again:
         LWIP_ERROR("len == 4", len == 4, return ERR_VAL;);
         decode_idx = DHCP_OPTION_IDX_T2;
         break;
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+      case (DHCP_OPTION_CLASSLESS_STATIC_ROUTE):
+        /* Parse classless static routes (RFC 3442), only when expecting an ACK.
+         * Check DHCP state rather than MSG_TYPE to avoid depending on
+         * option ordering within the packet. */
+        if (dhcp->state == DHCP_STATE_REQUESTING ||
+            dhcp->state == DHCP_STATE_RENEWING ||
+            dhcp->state == DHCP_STATE_REBINDING ||
+            dhcp->state == DHCP_STATE_REBOOTING) {
+          dhcp_parse_classless_routes(netif, q, val_offset, len);
+        }
+        decode_len = 0;
+        break;
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
       default:
         decode_len = 0;
         LWIP_DEBUGF(DHCP_DEBUG, ("skipping option %"U16_F" in options\n", (u16_t)op));
-        LWIP_HOOK_DHCP_PARSE_OPTION(ip_current_netif(), dhcp, dhcp->state, msg_in,
+        LWIP_HOOK_DHCP_PARSE_OPTION(netif, dhcp, dhcp->state, msg_in,
                                     dhcp_option_given(dhcp, DHCP_OPTION_IDX_MSG_TYPE) ? (u8_t)dhcp_get_option_value(dhcp, DHCP_OPTION_IDX_MSG_TYPE) : 0,
                                     op, len, q, val_offset);
         break;
@@ -1775,7 +1929,7 @@ decode_next:
     /* make sure the string is really NULL-terminated */
     dhcp->boot_file_name[DHCP_FILE_LEN-1] = 0;
   }
-#endif /* LWIP_DHCP_BOOTP_FILE */ 
+#endif /* LWIP_DHCP_BOOTP_FILE */
   return ERR_OK;
 }
 
@@ -1836,7 +1990,7 @@ dhcp_recv(void *arg, struct udp_pcb *pcb, struct pbuf *p, struct ip_globals *ip_
     goto free_pbuf_and_return;
   }
   /* option fields could be unfold? */
-  if (dhcp_parse_reply(p, dhcp) != ERR_OK) {
+  if (dhcp_parse_reply(p, dhcp, netif) != ERR_OK) {
     LWIP_DEBUGF(DHCP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_LEVEL_SERIOUS,
                 ("problem unfolding DHCP message - too short on memory?\n"));
     goto free_pbuf_and_return;

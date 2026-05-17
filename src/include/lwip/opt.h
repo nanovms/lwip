@@ -961,6 +961,25 @@
 #if !defined LWIP_DHCP_MAX_DNS_SERVERS || defined __DOXYGEN__
 #define LWIP_DHCP_MAX_DNS_SERVERS       DNS_MAX_SERVERS
 #endif
+
+/**
+ * LWIP_DHCP_CLASSLESS_STATIC_ROUTES==1: Enable DHCP Option 121 (RFC 3442)
+ * Classless Static Routes support. When enabled, the DHCP client requests
+ * and processes Option 121, adding static routes to the IPv4 route table.
+ * Per RFC 3442, if Option 121 is present, Option 3 (Router) is ignored.
+ * Requires LWIP_DHCP to be enabled.
+ */
+#if !defined LWIP_DHCP_CLASSLESS_STATIC_ROUTES || defined __DOXYGEN__
+#define LWIP_DHCP_CLASSLESS_STATIC_ROUTES  0
+#endif
+
+/**
+ * LWIP_IPV4_NUM_ROUTE_ENTRIES: Maximum number of entries in the IPv4 static
+ * route table. Used when LWIP_DHCP_CLASSLESS_STATIC_ROUTES is enabled.
+ */
+#if !defined LWIP_IPV4_NUM_ROUTE_ENTRIES || defined __DOXYGEN__
+#define LWIP_IPV4_NUM_ROUTE_ENTRIES  8
+#endif
 /**
  * @}
  */

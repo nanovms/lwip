@@ -57,6 +57,10 @@
 #include "lwip/stats.h"
 #include "lwip/prot/iana.h"
 
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+#include "lwip/ip4_route_table.h"
+#endif
+
 #include <string.h>
 
 #ifdef LWIP_HOOK_FILENAME
@@ -130,7 +134,7 @@ ip4_set_default_multicast_netif(struct netif *default_multicast_netif)
 }
 #endif /* LWIP_MULTICAST_TX_OPTIONS */
 
-#ifdef LWIP_HOOK_IP4_ROUTE_SRC
+#if defined(LWIP_HOOK_IP4_ROUTE_SRC) || LWIP_DHCP_CLASSLESS_STATIC_ROUTES
 /**
  * Source based IPv4 routing must be fully implemented in
  * LWIP_HOOK_IP4_ROUTE_SRC(). This function only provides the parameters.
@@ -139,15 +143,24 @@ struct netif *
 ip4_route_src(const ip4_addr_t *src, const ip4_addr_t *dest)
 {
   if (src != NULL) {
+    struct netif *netif;
     /* when src==NULL, the hook is called from ip4_route(dest) */
-    struct netif *netif = LWIP_HOOK_IP4_ROUTE_SRC(src, dest);
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+    netif = ip4_static_route(src, dest);
     if (netif != NULL) {
       return netif;
     }
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
+#ifdef LWIP_HOOK_IP4_ROUTE_SRC
+    netif = LWIP_HOOK_IP4_ROUTE_SRC(src, dest);
+    if (netif != NULL) {
+      return netif;
+    }
+#endif /* LWIP_HOOK_IP4_ROUTE_SRC */
   }
   return ip4_route(dest);
 }
-#endif /* LWIP_HOOK_IP4_ROUTE_SRC */
+#endif /* LWIP_HOOK_IP4_ROUTE_SRC || LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
 
 static u8_t ip4_route_netif(struct netif *n, void *priv)
 {
@@ -240,6 +253,12 @@ ip4_route(const ip4_addr_t *dest)
   }
 #endif /* LWIP_NETIF_LOOPBACK && !LWIP_HAVE_LOOPIF */
 
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+  netif = ip4_static_route(NULL, dest);
+  if (netif != NULL) {
+    return netif;
+  }
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
 #ifdef LWIP_HOOK_IP4_ROUTE_SRC
   netif = LWIP_HOOK_IP4_ROUTE_SRC(NULL, dest);
   if (netif != NULL) {

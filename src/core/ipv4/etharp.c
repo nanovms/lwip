@@ -55,6 +55,10 @@
 #include "lwip/prot/iana.h"
 #include "netif/ethernet.h"
 
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+#include "lwip/ip4_route_table.h"
+#endif
+
 #include <string.h>
 
 #ifdef LWIP_HOOK_FILENAME
@@ -845,6 +849,9 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
     /* unicast destination IP address? */
   } else {
     netif_addr_idx_t i;
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+    ip4_addr_t static_gw;
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
     /* outside local network? if so, this can neither be a global broadcast nor
        a subnet broadcast. */
     if (!ip4_addr_netcmp(ipaddr, netif_ip4_addr(netif), netif_ip4_netmask(netif)) &&
@@ -858,6 +865,12 @@ etharp_output(struct netif *netif, struct pbuf *q, const ip4_addr_t *ipaddr)
       if (!ip4_addr_islinklocal(&iphdr->src))
 #endif /* LWIP_AUTOIP */
       {
+#if LWIP_DHCP_CLASSLESS_STATIC_ROUTES
+        /* check static route table for a per-route gateway */
+        if (ip4_get_gateway(netif, ipaddr, &static_gw)) {
+          dst_addr = &static_gw;
+        } else
+#endif /* LWIP_DHCP_CLASSLESS_STATIC_ROUTES */
 #ifdef LWIP_HOOK_ETHARP_GET_GW
         /* For advanced routing, a single default gateway might not be enough, so get
            the IP address of the gateway to handle the current destination address. */

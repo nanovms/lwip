@@ -52,7 +52,7 @@
 extern "C" {
 #endif
 
-#ifdef LWIP_HOOK_IP4_ROUTE_SRC
+#if defined(LWIP_HOOK_IP4_ROUTE_SRC) || LWIP_DHCP_CLASSLESS_STATIC_ROUTES
 #define LWIP_IPV4_SRC_ROUTING   1
 #else
 #define LWIP_IPV4_SRC_ROUTING   0
