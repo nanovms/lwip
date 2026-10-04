@@ -423,13 +423,19 @@ extern sys_lock_t tcp_mutex;
 
 #endif /* LWIP_DEBUG */
 
+void tcp_active_hash_add(struct tcp_pcb *pcb);
+void tcp_active_hash_remove(struct tcp_pcb *pcb);
+struct tcp_pcb *tcp_active_hash_first(const ip_addr_t *remote_ip, u16_t remote_port, u16_t local_port);
+
 #define TCP_REG_ACTIVE(npcb)                       \
   do {                                             \
     TCP_REG(&tcp_active_pcbs, npcb);               \
+    tcp_active_hash_add(npcb);                     \
   } while (0)
 
 #define TCP_RMV_ACTIVE(npcb)                       \
   do {                                             \
+    tcp_active_hash_remove(npcb);                  \
     TCP_RMV(&tcp_active_pcbs, npcb);               \
   } while (0)
 

@@ -250,6 +250,11 @@ struct tcp_pcb {
   /* ports are in host byte order */
   u16_t remote_port;
 
+  /* hash chain link; valid while hashed is set */
+  struct tcp_pcb *hash_next;
+  u16_t hash_idx;
+  u8_t hashed;
+
   tcpflags_t flags;
 #define TF_ACK_DELAY   0x01U   /* Delayed ACK. */
 #define TF_ACK_NOW     0x02U   /* Immediate ACK. */
