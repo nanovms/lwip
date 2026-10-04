@@ -890,6 +890,13 @@ tcp_listen_input(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct tcp_
     int mss_idx = tcp_syncookie_recv(tcphdr, ip_data);
 
     if ((mss_idx >= 0) && (mss_idx < sizeof(msstab) / sizeof(msstab[0]))) {
+      /* Drop a valid cookie ACK while the backlog is full, before allocating a PCB. */
+      tcp_lock(pcb);
+      if (pcb->accepts_pending >= pcb->backlog) {
+        tcp_unlock(pcb);
+        return NULL;
+      }
+      tcp_unlock(pcb);
       LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", tcphdr->src, tcphdr->dest));
       npcb = tcp_listen_new_conn(pcb, tcphdr, tcp_data, ip_data, tcphdr->seqno - 1);
       if (npcb) {
@@ -1183,11 +1190,10 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
       if (flags & TCP_ACK) {
         /* expected ACK number? */
         if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
-          pcb->state = ESTABLISHED;
-          LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", inseg->tcphdr->src, inseg->tcphdr->dest));
 #if LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG
           if (pcb->listener == NULL) {
             /* listen pcb might be closed by now */
+            pcb->state = ESTABLISHED;
             err = ERR_VAL;
           } else
 #endif /* LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG */
@@ -1197,19 +1203,21 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
 #endif
 #if TCP_LISTEN_BACKLOG
             tcp_lock(pcb->listener);
-            LWIP_ASSERT("syn_pending != 0", pcb->listener->syn_pending != 0);
-            pcb->listener->syn_pending--;
             if (pcb->listener->accepts_pending >= pcb->listener->backlog) {
+              /* Keep the half-open PCB so the peer can retry when a slot is free. */
               LWIP_DEBUGF(TCP_DEBUG, ("tcp_process: listen backlog exceeded for port %"U16_F"\n", pcb->listener->local_port));
               tcp_unlock(pcb->listener);
-              tcp_abort(pcb);
-              return ERR_ABRT;
+              return ERR_OK;
             }
+            LWIP_ASSERT("syn_pending != 0", pcb->listener->syn_pending != 0);
+            pcb->listener->syn_pending--;
             tcp_unlock(pcb->listener);
 #endif /* TCP_LISTEN_BACKLOG */
+            pcb->state = ESTABLISHED;
             /* Call the accept function. */
             TCP_EVENT_ACCEPT(pcb->listener, pcb, pcb->callback_arg, ERR_OK, err);
           }
+          LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", inseg->tcphdr->src, inseg->tcphdr->dest));
           if (err != ERR_OK) {
             /* If the accept function returns with an error, we abort
              * the connection. */
