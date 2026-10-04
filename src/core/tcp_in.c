@@ -249,10 +249,10 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
 
   /* Demultiplex an incoming segment. First, we check if it is destined
      for an active connection. */
-  prev = NULL;
 
   SYS_ARCH_LOCK(&tcp_mutex);
-  for (pcb = tcp_active_pcbs; pcb != NULL; pcb = pcb->next) {
+  for (pcb = tcp_active_hash_first(&ip_data->current_iphdr_src, tcphdr->src, tcphdr->dest);
+       pcb != NULL; pcb = pcb->hash_next) {
     LWIP_ASSERT("tcp_input: active pcb->state != CLOSED", pcb->state != CLOSED);
     LWIP_ASSERT("tcp_input: active pcb->state != TIME-WAIT", pcb->state != TIME_WAIT);
     LWIP_ASSERT("tcp_input: active pcb->state != LISTEN", pcb->state != LISTEN);
@@ -260,7 +260,6 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
     /* check if PCB is bound to specific netif */
     if ((pcb->netif_idx != NETIF_NO_INDEX) &&
         (pcb->netif_idx != netif_get_index(ip_data->current_input_netif))) {
-      prev = pcb;
       continue;
     }
 
@@ -268,22 +267,9 @@ tcp_input(struct pbuf *p, struct ip_globals *ip_data)
         pcb->local_port == tcphdr->dest &&
         ip_addr_cmp(&pcb->remote_ip, &ip_data->current_iphdr_src) &&
         ip_addr_cmp(&pcb->local_ip, &ip_data->current_iphdr_dest)) {
-      /* Move this PCB to the front of the list so that subsequent
-         lookups will be faster (we exploit locality in TCP segment
-         arrivals). */
-      LWIP_ASSERT("tcp_input: pcb->next != pcb (before cache)", pcb->next != pcb);
-      if (prev != NULL) {
-        prev->next = pcb->next;
-        pcb->next = tcp_active_pcbs;
-        tcp_active_pcbs = pcb;
-      } else {
-        TCP_STATS_INC(tcp.cachehit);
-      }
-      LWIP_ASSERT("tcp_input: pcb->next != pcb (after cache)", pcb->next != pcb);
       tcp_ref(pcb);
       break;
     }
-    prev = pcb;
   }
 
   if (pcb != NULL) {
