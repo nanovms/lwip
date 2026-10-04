@@ -890,6 +890,14 @@ tcp_listen_input(struct tcp_pcb_listen *pcb, struct tcp_hdr *tcphdr, struct tcp_
     int mss_idx = tcp_syncookie_recv(tcphdr, ip_data);
 
     if ((mss_idx >= 0) && (mss_idx < sizeof(msstab) / sizeof(msstab[0]))) {
+      /* A valid cookie while the backlog is full: creating the connection now would only get it
+       * aborted. Drop the ACK; the peer retransmits and the cookie is checked again. */
+      tcp_lock(pcb);
+      if (pcb->accepts_pending >= pcb->backlog) {
+        tcp_unlock(pcb);
+        return NULL;
+      }
+      tcp_unlock(pcb);
       LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", tcphdr->src, tcphdr->dest));
       npcb = tcp_listen_new_conn(pcb, tcphdr, tcp_data, ip_data, tcphdr->seqno - 1);
       if (npcb) {
@@ -1183,6 +1191,24 @@ tcp_process(struct tcp_pcb *pcb, struct tcp_seg *inseg, struct tcp_input_parsed 
       if (flags & TCP_ACK) {
         /* expected ACK number? */
         if (TCP_SEQ_BETWEEN(ackno, pcb->lastack + 1, pcb->snd_nxt)) {
+#if TCP_LISTEN_BACKLOG
+          /* The listen backlog is full. Aborting here resets a connection the peer believes
+           * established. Drop the ACK instead and stay in SYN_RCVD, as Linux does by default
+           * (tcp_abort_on_overflow = 0): the SYN|ACK is retransmitted on its timer, the peer
+           * acknowledges it again or retransmits its data, and the connection completes once a
+           * slot is free. tcp_slowtmr() still removes it after TCP_SYN_RCVD_TIMEOUT. */
+          if (pcb->listener != NULL) {
+            u8_t backlog_full;
+            tcp_lock(pcb->listener);
+            backlog_full = pcb->listener->accepts_pending >= pcb->listener->backlog;
+            tcp_unlock(pcb->listener);
+            if (backlog_full) {
+              LWIP_DEBUGF(TCP_DEBUG, ("tcp_process: listen backlog full for port %"U16_F", ACK dropped\n",
+                                      pcb->listener->local_port));
+              return ERR_OK;
+            }
+          }
+#endif /* TCP_LISTEN_BACKLOG */
           pcb->state = ESTABLISHED;
           LWIP_DEBUGF(TCP_DEBUG, ("TCP connection established %"U16_F" -> %"U16_F".\n", inseg->tcphdr->src, inseg->tcphdr->dest));
 #if LWIP_CALLBACK_API || TCP_LISTEN_BACKLOG
