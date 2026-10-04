@@ -184,6 +184,69 @@ struct tcp_pcb **const tcp_pcb_lists[] = {&tcp_listen_pcbs.pcbs, &tcp_bound_pcbs
 
 sys_lock_t tcp_mutex;
 
+/* Hash of the active PCBs, keyed on (remote ip, remote port, local port).
+ * Every link or unlink of tcp_active_pcbs updates it under tcp_mutex, so a
+ * chain holds exactly the active PCBs whose key falls in that bucket. The
+ * local ip is left out of the key: it is still compared on every candidate. */
+#define TCP_ACTIVE_HASH_BITS 12
+#define TCP_ACTIVE_HASH_SIZE (1 << TCP_ACTIVE_HASH_BITS)
+static struct tcp_pcb *tcp_active_hash[TCP_ACTIVE_HASH_SIZE];
+
+static u16_t
+tcp_active_hash_key(const ip_addr_t *remote_ip, u16_t remote_port, u16_t local_port)
+{
+  u32_t h = ((u32_t)remote_port << 16) | local_port;
+#if LWIP_IPV6
+  if (IP_IS_V6(remote_ip)) {
+    const u32_t *a = ip_2_ip6(remote_ip)->addr;
+    h ^= a[0] ^ a[1] ^ a[2] ^ a[3];
+  } else
+#endif /* LWIP_IPV6 */
+  {
+#if LWIP_IPV4
+    h ^= ip4_addr_get_u32(ip_2_ip4(remote_ip));
+#endif /* LWIP_IPV4 */
+  }
+  /* Multiplicative hash: the product must wrap at 32 bits before the shift. */
+  h *= 0x9E3779B1U;
+  return (u16_t)(h >> (32 - TCP_ACTIVE_HASH_BITS));
+}
+
+void
+tcp_active_hash_add(struct tcp_pcb *pcb)
+{
+  u16_t idx = tcp_active_hash_key(&pcb->remote_ip, pcb->remote_port, pcb->local_port);
+  LWIP_ASSERT("tcp_active_hash_add: already hashed", !pcb->hashed);
+  pcb->hash_idx = idx;
+  pcb->hash_next = tcp_active_hash[idx];
+  tcp_active_hash[idx] = pcb;
+  pcb->hashed = 1;
+}
+
+void
+tcp_active_hash_remove(struct tcp_pcb *pcb)
+{
+  struct tcp_pcb **p;
+  if (!pcb->hashed) {
+    return;
+  }
+  /* The stored index does not depend on fields that change after removal. */
+  for (p = &tcp_active_hash[pcb->hash_idx]; *p != NULL; p = &(*p)->hash_next) {
+    if (*p == pcb) {
+      *p = pcb->hash_next;
+      break;
+    }
+  }
+  pcb->hash_next = NULL;
+  pcb->hashed = 0;
+}
+
+struct tcp_pcb *
+tcp_active_hash_first(const ip_addr_t *remote_ip, u16_t remote_port, u16_t local_port)
+{
+  return tcp_active_hash[tcp_active_hash_key(remote_ip, remote_port, local_port)];
+}
+
 /** Timer counter to handle calling slow-timer from tcp_tmr() */
 static u8_t tcp_timer;
 static u8_t tcp_timer_ctr;
@@ -1437,6 +1500,7 @@ tcp_slowtmr(void)
       enum tcp_state last_state;
       tcp_pcb_purge(pcb);
       /* Remove PCB from tcp_active_pcbs list. */
+      tcp_active_hash_remove(pcb);
       if (prev != NULL) {
         LWIP_ASSERT("tcp_slowtmr: middle tcp != tcp_active_pcbs", pcb != tcp_active_pcbs);
         prev->next = pcb->next;
@@ -2267,6 +2331,9 @@ tcp_pcb_remove(struct tcp_pcb **pcblist, struct tcp_pcb *pcb)
   LWIP_ASSERT("tcp_pcb_remove: invalid pcb", pcb != NULL);
   LWIP_ASSERT("tcp_pcb_remove: invalid pcblist", pcblist != NULL);
 
+  if (pcblist == &tcp_active_pcbs) {
+    tcp_active_hash_remove(pcb);
+  }
   TCP_RMV(pcblist, pcb);
 
   tcp_pcb_purge(pcb);
